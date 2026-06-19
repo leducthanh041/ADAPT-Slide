@@ -1,6 +1,7 @@
 #!/bin/bash
 #
-# Task-IL TTA v2 evaluation runner.
+# TASK-IL TTA evaluation runner for IND/OOD forward and IND reverse protocols.
+# Task-IL knows the task identity, so tcp/naive is not used here.
 
 #SBATCH --job-name=test_taskIL_tta
 #SBATCH --output=logs/test_taskIL_tta_%j.out
@@ -17,28 +18,62 @@ PROJECT_ROOT="${PROJECT_ROOT:-/mmlab_students/storageStudents/nguyenvd/Thanhld/W
 USER_NAME="${USER:-thanhld}"
 PROJECT_NAME="$(basename "$PROJECT_ROOT")"
 export MERGESLIDE_LOCAL_ROOT="${MERGESLIDE_LOCAL_ROOT:-/docker/data/$USER_NAME/$PROJECT_NAME}"
-LOG_DIR="${LOG_DIR:-logs}"
-CONFIG_FORWARD="${CONFIG_FORWARD:-configs/default_ood_eval_num_workers0.yaml}"
-CONFIG_REVERSE="${CONFIG_REVERSE:-configs/default_reverse_eval_num_workers0.yaml}"
+
+SETTING="${SETTING:-ind}"
+ORDER="${ORDER:-forward}"
+MODE="${MODE:-}"
+LOG_DIR="${LOG_DIR:-}"
+if [ -n "$LOG_DIR" ] && [[ "$LOG_DIR" != /* && "$LOG_DIR" != logs && "$LOG_DIR" != logs/* ]]; then
+    LOG_DIR="logs/$LOG_DIR"
+fi
+if [ -z "$LOG_DIR" ]; then
+    LOG_DIR="logs/taskil_tta/${SETTING}_${ORDER}"
+fi
+
+case "${SETTING}_${ORDER}" in
+    ood_forward)
+        CONFIG="${CONFIG:-configs/default_ood_eval_num_workers0.yaml}"
+        SAVE_DIR="${SAVE_DIR:-./checkpoints_ood/finetuned}"
+        MERGE_MODEL_PATH="${MERGE_MODEL_PATH:-./checkpoints_ood/merged}"
+        ;;
+    ind_forward)
+        CONFIG="${CONFIG:-configs/default_eval_num_workers0.yaml}"
+        SAVE_DIR="${SAVE_DIR:-./checkpoints/finetuned}"
+        MERGE_MODEL_PATH="${MERGE_MODEL_PATH:-./checkpoints/merged}"
+        ;;
+    ind_reverse)
+        CONFIG="${CONFIG:-configs/default_reverse_eval_num_workers0.yaml}"
+        SAVE_DIR="${SAVE_DIR:-./checkpoints/finetuned_reverse}"
+        MERGE_MODEL_PATH="${MERGE_MODEL_PATH:-./checkpoints/merged_reverse}"
+        ;;
+    ood_reverse)
+        echo "[ERROR] OOD reverse is not configured. Use SETTING=ind ORDER=reverse." >&2
+        exit 1
+        ;;
+    *)
+        echo "[ERROR] Unsupported SETTING/ORDER: SETTING=$SETTING ORDER=$ORDER (expected ind|ood with forward, or ind with reverse)" >&2
+        exit 1
+        ;;
+esac
+
 CLASSIL_WRAPPER="${CLASSIL_WRAPPER:-tools/run_classil_with_pt_features.py}"
 TASKIL_TTA_ENTRYPOINT="${TASKIL_TTA_ENTRYPOINT:-test_taskIL_tta.py}"
 
-# ---------------------------------------------------------------------------
-# TTA v1 hyperparameters
-# ---------------------------------------------------------------------------
+if [ -n "$MODE" ]; then
+    echo "[WARN] MODE=$MODE is ignored for Task-IL TTA because task identity is known." >&2
+fi
+
 TTA_M="${TTA_M:-8}"
 TTA_K_SUB="${TTA_K_SUB:-300}"
 TTA_TOP_RATIO="${TTA_TOP_RATIO:-0.5}"
 TTA_BETA="${TTA_BETA:-1.0}"
 TTA_LR="${TTA_LR:-1e-4}"
-TTA_N_STEPS="${TTA_N_STEPS:-1}"
+TTA_N_STEPS="${TTA_N_STEPS:-10}"
 TTA_PARAM_SCOPE="${TTA_PARAM_SCOPE:-ln_only}"
 TTA_ENTROPY_THRESHOLD="${TTA_ENTROPY_THRESHOLD:-0.4}"
 TTA_EPISODIC="${TTA_EPISODIC:-0}"
+TTA_VERBOSE_LOSS="${TTA_VERBOSE_LOSS:-1}"
 
-# ---------------------------------------------------------------------------
-# Python binary
-# ---------------------------------------------------------------------------
 if [ -z "${PYTHON_BIN:-}" ]; then
     DEFAULT_PYTHON="/mmlab_students/storageStudents/nguyenvd/anaconda3/envs/mergePre/bin/python3.10"
     if [ -x "$DEFAULT_PYTHON" ]; then
@@ -52,10 +87,11 @@ cd "$PROJECT_ROOT"
 
 mkdir -p "$MERGESLIDE_LOCAL_ROOT/logs" \
          "$MERGESLIDE_LOCAL_ROOT/checkpoints" \
+         "$MERGESLIDE_LOCAL_ROOT/checkpoints_ood" \
          "$MERGESLIDE_LOCAL_ROOT/sqlite" \
          "$MERGESLIDE_LOCAL_ROOT/tmp"
 
-for name in logs checkpoints; do
+for name in logs checkpoints checkpoints_ood; do
     repo_path="$PROJECT_ROOT/$name"
     local_path="$MERGESLIDE_LOCAL_ROOT/$name"
     if [ -L "$repo_path" ]; then
@@ -83,24 +119,29 @@ echo "[INFO] start at $(date)"
 echo "[INFO] project_root=$PROJECT_ROOT"
 echo "[INFO] python=$PYTHON_BIN"
 echo "[INFO] local_hot_root=$MERGESLIDE_LOCAL_ROOT"
+echo "[INFO] setting=$SETTING"
+echo "[INFO] order=$ORDER"
 echo "[INFO] log_dir=$LOG_DIR"
+echo "[INFO] config=$CONFIG"
+echo "[INFO] save_dir=$SAVE_DIR"
+echo "[INFO] merge_model_path=$MERGE_MODEL_PATH"
+echo "[INFO] classil_wrapper=$CLASSIL_WRAPPER"
 echo "[INFO] taskil_tta_entrypoint=$TASKIL_TTA_ENTRYPOINT"
-echo "[INFO] === TTA v1 params ==="
-echo "[INFO] M=$TTA_M | K_sub=$TTA_K_SUB | top_ratio=$TTA_TOP_RATIO"
-echo "[INFO] beta=$TTA_BETA | lr=$TTA_LR | n_steps=$TTA_N_STEPS | param_scope=$TTA_PARAM_SCOPE"
-echo "[INFO] entropy_threshold=$TTA_ENTROPY_THRESHOLD | reset=$EPISODIC_LABEL"
+echo "[INFO] M=$TTA_M | K_sub=$TTA_K_SUB | top_ratio=$TTA_TOP_RATIO | beta=$TTA_BETA | lr=$TTA_LR | n_steps=$TTA_N_STEPS | param_scope=$TTA_PARAM_SCOPE | entropy_threshold=$TTA_ENTROPY_THRESHOLD | reset=$EPISODIC_LABEL | verbose_loss=$TTA_VERBOSE_LOSS"
 
 check_log_not_held() {
     local log_path="$1"
     local resolved_log
     resolved_log="$(readlink -f "$log_path" 2>/dev/null || true)"
     if [ -z "$resolved_log" ]; then return 0; fi
+
     local fd target pid state cmdline
     for fd in /proc/[0-9]*/fd/1 /proc/[0-9]*/fd/2; do
         [ -e "$fd" ] || continue
         target="$(readlink -f "$fd" 2>/dev/null || true)"
         [ "$target" = "$resolved_log" ] || continue
-        pid="${fd#/proc/}"; pid="${pid%%/*}"
+        pid="${fd#/proc/}"
+        pid="${pid%%/*}"
         [ "$pid" = "$$" ] && continue
         state="$(awk '/^State:/ {print $2}' "/proc/$pid/status" 2>/dev/null || true)"
         cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
@@ -125,11 +166,7 @@ run_to_logs() {
     "$@" >> "$result_log" 2>> "$error_log"
 }
 
-# ---------------------------------------------------------------------------
-# TTA base args
-# ---------------------------------------------------------------------------
 TTA_ARGS=(
-    # v1 params
     --M                 "$TTA_M"
     --K_sub             "$TTA_K_SUB"
     --top_ratio         "$TTA_TOP_RATIO"
@@ -138,38 +175,20 @@ TTA_ARGS=(
     --n_steps           "$TTA_N_STEPS"
     --tta_param_scope   "$TTA_PARAM_SCOPE"
     --entropy_threshold "$TTA_ENTROPY_THRESHOLD"
-    --verbose_loss
 )
 if [ -n "$EPISODIC_FLAG" ]; then
     TTA_ARGS+=("$EPISODIC_FLAG")
 fi
+if [ "$TTA_VERBOSE_LOSS" = "1" ]; then
+    TTA_ARGS+=(--verbose_loss)
+fi
 
-# ---------------------------------------------------------------------------
-# Variants
-# ---------------------------------------------------------------------------
-
-export CUDA_VISIBLE_DEVICES=7
-
-# 1. Forward
-run_to_logs \
-    "$LOG_DIR/result_taskil_tta.log" \
-    "$LOG_DIR/error_taskil_tta.log" \
+run_to_logs "$LOG_DIR/result_taskil_tta.log" "$LOG_DIR/error_taskil_tta.log" \
     "$PYTHON_BIN" -u "$CLASSIL_WRAPPER" \
-        --entrypoint       "$TASKIL_TTA_ENTRYPOINT" \
-        --config           "$CONFIG_FORWARD" \
-        --save_dir         ./checkpoints/finetuned \
-        --merge_model_path ./checkpoints/merged \
+        --entrypoint "$TASKIL_TTA_ENTRYPOINT" \
+        --config "$CONFIG" \
+        --save_dir "$SAVE_DIR" \
+        --merge_model_path "$MERGE_MODEL_PATH" \
         "${TTA_ARGS[@]}"
-
-# 2. Reverse
-#run_to_logs \
-#    "$LOG_DIR/result_taskil_tta_re.log" \
-#    "$LOG_DIR/error_taskil_tta_re.log" \
-#    "$PYTHON_BIN" -u "$CLASSIL_WRAPPER" \
-#        --entrypoint       "$TASKIL_TTA_ENTRYPOINT" \
-#        --config           "$CONFIG_REVERSE" \
-#        --save_dir         ./checkpoints/finetuned_reverse \
-#        --merge_model_path ./checkpoints/merged_reverse \
-#        "${TTA_ARGS[@]}"
 
 echo "[INFO] finished at $(date)"

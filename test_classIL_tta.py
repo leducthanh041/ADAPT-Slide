@@ -26,6 +26,7 @@ Usage:
 """
 import argparse
 import csv
+import json
 import os
 import time
 from pathlib import Path
@@ -174,17 +175,21 @@ def eval_task_tta(
         total_classes    = None
 
     for features, coords, label in tqdm(test_loader, leave=False):
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        t0 = time.perf_counter()
         features = features.to(device)
         coords   = coords.long().to(device)
 
         idx = torch.randperm(features.shape[0])[:K_PATCHES]
         features, coords = features[idx], coords[idx]
 
-        t0 = time.time()
         pred_class, probs, pred_task, adapt_log = tta_model.adapt_and_predict(
             features, coords
         )
-        times.append(time.time() - t0)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        times.append(time.perf_counter() - t0)
 
         if verbose_loss:
             loss_logs.append(adapt_log)
@@ -294,6 +299,12 @@ if __name__ == "__main__":
         default="",
         help="Optional CSV path to save per-fold/per-task TTA metrics, including TCP routing_acc.",
     )
+    parser.add_argument(
+        "--efficiency_json",
+        type=str,
+        default="",
+        help="Optional JSON path to save updated params, TTA steps, throughput, and peak VRAM.",
+    )
 
     args = parser.parse_args()
 
@@ -302,6 +313,12 @@ if __name__ == "__main__":
     args.merge_model_path = str(resolve_hot_path(args.merge_model_path, local_hot_root))
     if args.result_csv:
         args.result_csv = str(resolve_hot_path(args.result_csv, local_hot_root))
+    if args.efficiency_json:
+        args.efficiency_json = str(resolve_hot_path(args.efficiency_json, local_hot_root))
+    else:
+        args.efficiency_json = str(
+            Path(args.merge_model_path) / f"efficiency_classil_tta_{args.mode}.json"
+        )
 
     cfg    = OmegaConf.load(args.config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -336,6 +353,11 @@ if __name__ == "__main__":
     overall_routing_acc  = []
     overall_routing_acc_per_task = []
     all_results          = []
+    efficiency_params    = None
+
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    eval_wall_start = time.perf_counter()
 
     for fold_id in tqdm(range(cfg.training.num_folds), desc="Folds"):
         fold = f"fold_{fold_id}"
@@ -371,6 +393,14 @@ if __name__ == "__main__":
             episodic             = args.episodic,
             entropy_threshold    = args.entropy_threshold,
         )
+        if efficiency_params is None:
+            efficiency_params = {
+                "updated_object": f"{args.tta_param_scope} backbone parameters",
+                "updated_params": int(tta_model.updated_params),
+                "total_params": int(tta_model.total_params),
+                "update_ratio": float(tta_model.update_ratio),
+                "ln_layers": int(tta_model.num_ln_layers),
+            }
 
         all_baccs     = []
         all_accs      = []
@@ -531,3 +561,47 @@ if __name__ == "__main__":
             writer.writeheader()
             writer.writerows(all_results)
         print(f"\n[INFO] Saved result CSV: {result_csv_path}")
+
+    total_elapsed_s = float(time.perf_counter() - eval_wall_start)
+    total_slide_count = int(sum(row["n_samples"] for row in all_results))
+    timed_elapsed_s = float(sum(row["elapsed_s"] for row in all_results))
+    time_per_slide_s = timed_elapsed_s / max(total_slide_count, 1)
+    peak_vram_mb = (
+        float(torch.cuda.max_memory_allocated(device) / (1024 ** 2))
+        if device.type == "cuda" else 0.0
+    )
+    efficiency = {
+        "method": "MergeSlide-TTA",
+        "eval_setting": "class_il",
+        "mode": args.mode,
+        "param_scope": args.tta_param_scope,
+        "tta_steps": int(args.n_steps),
+        "patches_per_wsi": int(K_PATCHES),
+        "subbags": int(args.M),
+        "patches_per_subbag": int(args.K_sub),
+        "num_slides": total_slide_count,
+        "timing_scope": "per-slide online TTA update plus final prediction; checkpoint/model setup excluded",
+        "timing_cuda_synchronized": device.type == "cuda",
+        "adapt_merge_elapsed_s": None,
+        "inference_only_elapsed_s": None,
+        "online_adapt_inference_elapsed_s": timed_elapsed_s,
+        "end_to_end_elapsed_s": timed_elapsed_s,
+        "timed_elapsed_s": timed_elapsed_s,
+        "wall_elapsed_s": total_elapsed_s,
+        "inference_only_time_per_slide_s": None,
+        "end_to_end_time_per_slide_s": time_per_slide_s,
+        "time_per_slide_s": time_per_slide_s,
+        "end_to_end_throughput_slides_per_s": total_slide_count / max(timed_elapsed_s, 1e-12),
+        "throughput_slides_per_s": total_slide_count / max(timed_elapsed_s, 1e-12),
+        "peak_vram_eval_mb": peak_vram_mb,
+        "peak_vram_adapt_mb": peak_vram_mb,
+        "backprop": True,
+        "source_free": True,
+        "label_free": True,
+        **(efficiency_params or {}),
+    }
+    efficiency_path = Path(args.efficiency_json)
+    efficiency_path.parent.mkdir(parents=True, exist_ok=True)
+    efficiency_path.write_text(json.dumps(efficiency, indent=2), encoding="utf-8")
+    print(f"[EFFICIENCY] {json.dumps(efficiency, sort_keys=True)}")
+    print(f"[INFO] Saved efficiency JSON: {efficiency_path}")

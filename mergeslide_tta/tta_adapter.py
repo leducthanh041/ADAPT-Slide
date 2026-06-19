@@ -191,6 +191,10 @@ class MergeSlide_TTA(nn.Module):
                            if isinstance(m, nn.LayerNorm)])
         n_trainable = sum(p.numel() for p in adapt_params)
         n_total     = sum(p.numel() for p in self.backbone.parameters())
+        self.num_ln_layers = num_ln
+        self.updated_params = n_trainable
+        self.total_params = n_total
+        self.update_ratio = n_trainable / max(n_total, 1)
         print(
             f"[MergeSlide-TTA] {mode_info} | LN layers={num_ln} | "
             f"param_scope={param_scope} | trainable_params={n_trainable:,}/{n_total:,} | "

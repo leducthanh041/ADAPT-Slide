@@ -19,39 +19,51 @@ USER_NAME="${USER:-thanhld}"
 PROJECT_NAME="$(basename "$PROJECT_ROOT")"
 export MERGESLIDE_LOCAL_ROOT="${MERGESLIDE_LOCAL_ROOT:-/docker/data/$USER_NAME/$PROJECT_NAME}"
 
-SETTING="${SETTING:-ood}"
+SETTING="${SETTING:-ind}"
+ORDER="${ORDER:-forward}"
 LOG_DIR="${LOG_DIR:-}"
 MODE="${MODE:-tcp}"
 CLASSIL_ENTRYPOINT="${CLASSIL_ENTRYPOINT:-tools/run_classil_with_pt_features.py}"
 BASELINE_ENTRYPOINT="${BASELINE_ENTRYPOINT:-test_classIL_task_prompt.py}"
 
-if [ -z "$LOG_DIR" ]; then
-    case "$SETTING" in
-        ood) LOG_DIR="logs/OOD_results/test_new_run" ;;
-        ind) LOG_DIR="logs/IND_results/test_new_run" ;;
-        *) echo "[ERROR] Unsupported SETTING=$SETTING (expected ood|ind)" >&2; exit 1 ;;
-    esac
-fi
-if [[ "$LOG_DIR" != /* && "$LOG_DIR" != logs && "$LOG_DIR" != logs/* ]]; then
+if [ -n "$LOG_DIR" ] && [[ "$LOG_DIR" != /* && "$LOG_DIR" != logs && "$LOG_DIR" != logs/* ]]; then
     LOG_DIR="logs/$LOG_DIR"
 fi
+if [ -z "$LOG_DIR" ]; then
+    LOG_DIR="logs/classil_baseline/${SETTING}_${ORDER}_${MODE}"
+fi
+case "$MODE" in
+    tcp|naive|all) ;;
+    *) echo "[ERROR] Unsupported MODE=$MODE (expected tcp|naive|all)" >&2; exit 1 ;;
+esac
 
-case "$SETTING" in
-    ood)
+case "${SETTING}_${ORDER}" in
+    ood_forward)
         CONFIG_FORWARD="${CONFIG_FORWARD:-configs/default_ood_eval_num_workers0.yaml}"
         SAVE_DIR_FORWARD="${SAVE_DIR_FORWARD:-./checkpoints_ood/finetuned}"
         MERGE_MODEL_PATH_FORWARD="${MERGE_MODEL_PATH_FORWARD:-./checkpoints_ood/merged}"
         ;;
-    ind)
+    ind_forward)
         CONFIG_FORWARD="${CONFIG_FORWARD:-configs/default_eval_num_workers0.yaml}"
         SAVE_DIR_FORWARD="${SAVE_DIR_FORWARD:-./checkpoints/finetuned}"
         MERGE_MODEL_PATH_FORWARD="${MERGE_MODEL_PATH_FORWARD:-./checkpoints/merged}"
         ;;
-    *) echo "[ERROR] Unsupported SETTING=$SETTING (expected ood|ind)" >&2; exit 1 ;;
+    ind_reverse)
+        CONFIG_FORWARD="${CONFIG_FORWARD:-configs/default_reverse_eval_num_workers0.yaml}"
+        SAVE_DIR_FORWARD="${SAVE_DIR_FORWARD:-./checkpoints/finetuned_reverse}"
+        MERGE_MODEL_PATH_FORWARD="${MERGE_MODEL_PATH_FORWARD:-./checkpoints/merged_reverse}"
+        ;;
+    ood_reverse)
+        echo "[ERROR] OOD reverse is not configured. Use SETTING=ind ORDER=reverse." >&2
+        exit 1
+        ;;
+    *)
+        echo "[ERROR] Unsupported SETTING/ORDER: SETTING=$SETTING ORDER=$ORDER (expected ind|ood with forward, or ind with reverse)" >&2
+        exit 1
+        ;;
 esac
 
-BASELINE_RESULT_CSV="${BASELINE_RESULT_CSV:-$LOG_DIR/baseline_tcp_routing_results.csv}"
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4}"
+BASELINE_RESULT_CSV="${BASELINE_RESULT_CSV:-}"
 
 if [ -z "${PYTHON_BIN:-}" ]; then
     DEFAULT_PYTHON="/mmlab_students/storageStudents/nguyenvd/anaconda3/envs/mergePre/bin/python3.10"
@@ -66,10 +78,11 @@ cd "$PROJECT_ROOT"
 
 mkdir -p "$MERGESLIDE_LOCAL_ROOT/logs" \
          "$MERGESLIDE_LOCAL_ROOT/checkpoints" \
+         "$MERGESLIDE_LOCAL_ROOT/checkpoints_ood" \
          "$MERGESLIDE_LOCAL_ROOT/sqlite" \
          "$MERGESLIDE_LOCAL_ROOT/tmp"
 
-for name in logs checkpoints; do
+for name in logs checkpoints checkpoints_ood; do
     repo_path="$PROJECT_ROOT/$name"
     local_path="$MERGESLIDE_LOCAL_ROOT/$name"
     if [ -L "$repo_path" ]; then
@@ -101,13 +114,14 @@ echo "[INFO] project_root=$PROJECT_ROOT"
 echo "[INFO] python=$PYTHON_BIN"
 echo "[INFO] local_hot_root=$MERGESLIDE_LOCAL_ROOT"
 echo "[INFO] setting=$SETTING"
+echo "[INFO] order=$ORDER"
 echo "[INFO] mode=$MODE"
 echo "[INFO] log_dir=$LOG_DIR"
 echo "[INFO] config_forward=$CONFIG_FORWARD"
 echo "[INFO] save_dir_forward=$SAVE_DIR_FORWARD"
 echo "[INFO] merge_model_path_forward=$MERGE_MODEL_PATH_FORWARD"
-echo "[INFO] baseline_result_csv=$BASELINE_RESULT_CSV"
-echo "[INFO] cuda_visible_devices=$CUDA_VISIBLE_DEVICES"
+echo "[INFO] baseline_result_csv=${BASELINE_RESULT_CSV:-<auto per mode>}"
+echo "[INFO] cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-<unset>}"
 echo "[INFO] classil_entrypoint=$CLASSIL_ENTRYPOINT"
 echo "[INFO] baseline_entrypoint=$BASELINE_ENTRYPOINT"
 
@@ -163,23 +177,42 @@ run_to_logs() {
     "$@" >> "$result_log" 2>> "$error_log"
 }
 
-BASELINE_ARGS=(
-    --config "$CONFIG_FORWARD"
-    --save_dir "$SAVE_DIR_FORWARD"
-    --merge_model_path "$MERGE_MODEL_PATH_FORWARD"
-    --mode "$MODE"
-    --entrypoint "$BASELINE_ENTRYPOINT"
-)
-
-if [ -n "$BASELINE_RESULT_CSV" ]; then
-    if supports_arg "--result_csv"; then
-        BASELINE_ARGS+=(--result_csv "$BASELINE_RESULT_CSV")
-    else
-        echo "[WARN] $BASELINE_ENTRYPOINT does not support --result_csv; CSV will not be saved" >&2
+mode_enabled() {
+    local run_mode="$1"
+    if [ "$MODE" = "all" ]; then
+        return 0
     fi
-fi
+    [ "$MODE" = "$run_mode" ]
+}
 
-run_to_logs "$LOG_DIR/result_test_class_${MODE}.log" "$LOG_DIR/error_test_class_${MODE}.log" \
-    "$PYTHON_BIN" -u "$CLASSIL_ENTRYPOINT" "${BASELINE_ARGS[@]}"
+run_baseline_mode() {
+    local run_mode="$1"
+    local result_csv="${BASELINE_RESULT_CSV:-$LOG_DIR/baseline_${run_mode}_routing_results.csv}"
+    local baseline_args=(
+        --config "$CONFIG_FORWARD"
+        --save_dir "$SAVE_DIR_FORWARD"
+        --merge_model_path "$MERGE_MODEL_PATH_FORWARD"
+        --mode "$run_mode"
+        --entrypoint "$BASELINE_ENTRYPOINT"
+    )
+
+    if [ -n "$result_csv" ]; then
+        if supports_arg "--result_csv"; then
+            baseline_args+=(--result_csv "$result_csv")
+        else
+            echo "[WARN] $BASELINE_ENTRYPOINT does not support --result_csv; CSV will not be saved" >&2
+        fi
+    fi
+
+    run_to_logs "$LOG_DIR/result_test_class_${run_mode}.log" "$LOG_DIR/error_test_class_${run_mode}.log" \
+        "$PYTHON_BIN" -u "$CLASSIL_ENTRYPOINT" "${baseline_args[@]}"
+}
+
+if mode_enabled tcp; then
+    run_baseline_mode tcp
+fi
+if mode_enabled naive; then
+    run_baseline_mode naive
+fi
 
 echo "[INFO] finished at $(date)"

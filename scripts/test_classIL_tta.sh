@@ -19,35 +19,49 @@ PROJECT_ROOT="${PROJECT_ROOT:-/mmlab_students/storageStudents/nguyenvd/Thanhld/W
 USER_NAME="${USER:-thanhld}"
 PROJECT_NAME="$(basename "$PROJECT_ROOT")"
 export MERGESLIDE_LOCAL_ROOT="${MERGESLIDE_LOCAL_ROOT:-/docker/data/$USER_NAME/$PROJECT_NAME}"
-SETTING="${SETTING:-ood}"
+SETTING="${SETTING:-ind}"
+ORDER="${ORDER:-forward}"
+MODE="${MODE:-${TTA_MODE:-tcp}}"
 LOG_DIR="${LOG_DIR:-}"
-if [[ "$LOG_DIR" != /* && "$LOG_DIR" != logs && "$LOG_DIR" != logs/* ]]; then
+if [ -n "$LOG_DIR" ] && [[ "$LOG_DIR" != /* && "$LOG_DIR" != logs && "$LOG_DIR" != logs/* ]]; then
     LOG_DIR="logs/$LOG_DIR"
 fi
 if [ -z "$LOG_DIR" ]; then
-    case "$SETTING" in
-        ood) LOG_DIR="logs/my_tta_run/OOD_results/test_new_run" ;;
-        ind) LOG_DIR="logs/my_tta_run/IND_results/test_pt_run" ;;
-        *) echo "[ERROR] Unsupported SETTING=$SETTING (expected ood|ind)" >&2; exit 1 ;;
-    esac
+    LOG_DIR="logs/classil_tta/${SETTING}_${ORDER}_${MODE}"
 fi
-case "$SETTING" in
-    ood)
+case "$MODE" in
+    tcp|naive|all) ;;
+    *) echo "[ERROR] Unsupported MODE=$MODE (expected tcp|naive|all)" >&2; exit 1 ;;
+esac
+case "${SETTING}_${ORDER}" in
+    ood_forward)
         CONFIG_FORWARD="${CONFIG_FORWARD:-configs/default_ood_eval_num_workers0.yaml}"
         SAVE_DIR_FORWARD="${SAVE_DIR_FORWARD:-./checkpoints_ood/finetuned}"
         MERGE_MODEL_PATH_FORWARD="${MERGE_MODEL_PATH_FORWARD:-./checkpoints_ood/merged}"
         ;;
-    ind)
+    ind_forward)
         CONFIG_FORWARD="${CONFIG_FORWARD:-configs/default_eval_num_workers0.yaml}"
         SAVE_DIR_FORWARD="${SAVE_DIR_FORWARD:-./checkpoints/finetuned}"
         MERGE_MODEL_PATH_FORWARD="${MERGE_MODEL_PATH_FORWARD:-./checkpoints/merged}"
         ;;
+    ind_reverse)
+        CONFIG_FORWARD="${CONFIG_FORWARD:-configs/default_reverse_eval_num_workers0.yaml}"
+        SAVE_DIR_FORWARD="${SAVE_DIR_FORWARD:-./checkpoints/finetuned_reverse}"
+        MERGE_MODEL_PATH_FORWARD="${MERGE_MODEL_PATH_FORWARD:-./checkpoints/merged_reverse}"
+        ;;
+    ood_reverse)
+        echo "[ERROR] OOD reverse is not configured. Use SETTING=ind ORDER=reverse." >&2
+        exit 1
+        ;;
+    *)
+        echo "[ERROR] Unsupported SETTING/ORDER: SETTING=$SETTING ORDER=$ORDER (expected ind|ood with forward, or ind with reverse)" >&2
+        exit 1
+        ;;
 esac
-CONFIG_REVERSE="${CONFIG_REVERSE:-configs/default_reverse_eval_num_workers0.yaml}"
 
 CLASSIL_ENTRYPOINT="${CLASSIL_ENTRYPOINT:-tools/run_classil_with_pt_features.py}"
 TTA_ENTRYPOINT="${TTA_ENTRYPOINT:-test_classIL_tta.py}"
-TTA_VARIANTS="${TTA_VARIANTS:-tcp}"
+TTA_VARIANTS="${TTA_VARIANTS:-$MODE}"
 
 # ---------------------------------------------------------------------------
 TTA_M="${TTA_M:-8}"                         # sub-bags/slide
@@ -64,7 +78,6 @@ TTA_EPISODIC="${TTA_EPISODIC:-0}"
 TTA_VERBOSE_LOSS="${TTA_VERBOSE_LOSS:-1}"
 TTA_DIAG_DIR="${TTA_DIAG_DIR:-}"
 TTA_RESULT_CSV="${TTA_RESULT_CSV:-$LOG_DIR/tta_v1_tcp_routing_results.csv}"
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4}"
 
 # ---------------------------------------------------------------------------
 # Python binary  ging ht test_classIL.sh
@@ -85,10 +98,11 @@ cd "$PROJECT_ROOT"
 # ---------------------------------------------------------------------------
 mkdir -p "$MERGESLIDE_LOCAL_ROOT/logs" \
          "$MERGESLIDE_LOCAL_ROOT/checkpoints" \
+         "$MERGESLIDE_LOCAL_ROOT/checkpoints_ood" \
          "$MERGESLIDE_LOCAL_ROOT/sqlite" \
          "$MERGESLIDE_LOCAL_ROOT/tmp"
 
-for name in logs checkpoints; do
+for name in logs checkpoints checkpoints_ood; do
     repo_path="$PROJECT_ROOT/$name"
     local_path="$MERGESLIDE_LOCAL_ROOT/$name"
     if [ -L "$repo_path" ]; then
@@ -121,10 +135,12 @@ echo "[INFO] python=$PYTHON_BIN"
 echo "[INFO] local_hot_root=$MERGESLIDE_LOCAL_ROOT"
 echo "[INFO] tta_entrypoint=$TTA_ENTRYPOINT"
 echo "[INFO] setting=$SETTING"
+echo "[INFO] order=$ORDER"
+echo "[INFO] mode=$MODE"
 echo "[INFO] log_dir=$LOG_DIR"
-echo "[INFO] config_forward=$CONFIG_FORWARD"
-echo "[INFO] save_dir_forward=$SAVE_DIR_FORWARD"
-echo "[INFO] merge_model_path_forward=$MERGE_MODEL_PATH_FORWARD"
+echo "[INFO] config=$CONFIG_FORWARD"
+echo "[INFO] save_dir=$SAVE_DIR_FORWARD"
+echo "[INFO] merge_model_path=$MERGE_MODEL_PATH_FORWARD"
 echo "[INFO] tta_result_csv=$TTA_RESULT_CSV"
 echo "[INFO] cuda_visible_devices=$CUDA_VISIBLE_DEVICES"
 echo "[INFO] tta_variants=$TTA_VARIANTS"
@@ -229,10 +245,15 @@ if [ -n "$TTA_RESULT_CSV" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4 variants  mirrors test_classIL.sh (tcp/naive  forward/reverse)
+# Run selected Class-IL TTA mode on selected protocol.
+# Protocols:
+#   SETTING=ind ORDER=forward  -> B->R->N->E->T->C
+#   SETTING=ood ORDER=forward  -> cross-site/OOD forward
+#   SETTING=ind ORDER=reverse  -> C->T->E->N->R->B
+# Modes:
+#   MODE=tcp | MODE=naive | MODE=all
 # ---------------------------------------------------------------------------
 
-# 1. Forward + TCP
 if variant_enabled tcp; then
     run_to_logs \
         "$LOG_DIR/result_tta_tcp.log" \
@@ -245,43 +266,16 @@ if variant_enabled tcp; then
             "${TTA_ARGS[@]}"
 fi
 
-# 2. Forward + Naive
-#if variant_enabled naive; then
-#    run_to_logs \
-#        "$LOG_DIR/result_tta_naive.log" \
-#        "$LOG_DIR/error_tta_naive.log" \
-#        "$PYTHON_BIN" -u "$CLASSIL_ENTRYPOINT" \
-#            --config           "$CONFIG_FORWARD" \
-#            --save_dir         ./checkpoints/finetuned \
-#            --merge_model_path ./checkpoints/merged \
-#            --mode naive \
-#            "${TTA_ARGS[@]}"
-#fi
-
-# 3. Reverse + TCP
-#if variant_enabled tcp_re; then
-#    run_to_logs \
-#        "$LOG_DIR/result_tta_tcp_re.log" \
-#        "$LOG_DIR/error_tta_tcp_re.log" \
-#        "$PYTHON_BIN" -u "$CLASSIL_ENTRYPOINT" \
-#            --config           "$CONFIG_REVERSE" \
-#            --save_dir         ./checkpoints/finetuned_reverse \
-#            --merge_model_path ./checkpoints/merged_reverse \
-#            --mode tcp \
-#            "${TTA_ARGS[@]}"
-#fi
-
-# 4. Reverse + Naive
-#if variant_enabled naive_re; then
-#    run_to_logs \
-#        "$LOG_DIR/result_tta_naive_re.log" \
-#        "$LOG_DIR/error_tta_naive_re.log" \
-#        "$PYTHON_BIN" -u "$CLASSIL_ENTRYPOINT" \
-#            --config           "$CONFIG_REVERSE" \
-#            --save_dir         ./checkpoints/finetuned_reverse \
-#            --merge_model_path ./checkpoints/merged_reverse \
-#            --mode naive \
-#            "${TTA_ARGS[@]}"
-#fi
+if variant_enabled naive; then
+   run_to_logs \
+       "$LOG_DIR/result_tta_naive.log" \
+       "$LOG_DIR/error_tta_naive.log" \
+       "$PYTHON_BIN" -u "$CLASSIL_ENTRYPOINT" \
+           --config           "$CONFIG_FORWARD" \
+           --save_dir         "$SAVE_DIR_FORWARD" \
+           --merge_model_path "$MERGE_MODEL_PATH_FORWARD" \
+           --mode naive \
+           "${TTA_ARGS[@]}"
+fi
 
 echo "[INFO] finished at $(date)"

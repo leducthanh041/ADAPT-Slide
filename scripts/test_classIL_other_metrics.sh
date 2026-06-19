@@ -1,7 +1,6 @@
 #!/bin/bash
 #
-# CLASS-IL continual metrics runner. Logs/checkpoints are kept on local /docker
-# via repo symlinks, while datasets remain read-only inputs on /mmlab_students.
+# CLASS-IL continual metrics runner for IND/OOD forward and IND reverse.
 
 #SBATCH --job-name=om_test_classIL
 #SBATCH --output=logs/om_test_classIL_%j.out
@@ -14,14 +13,52 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="${PROJECT_ROOT:-/mmlab_students/storageStudents/nguyenvd/Thanhld/WSI/MergeSlide_TTA}"
+PROJECT_ROOT="${PROJECT_ROOT:-/mmlab_students/storageStudents/nguyenvd/Thanhld/WSI/MergeSlide_TTA_v1}"
 USER_NAME="${USER:-thanhld}"
 PROJECT_NAME="$(basename "$PROJECT_ROOT")"
 export MERGESLIDE_LOCAL_ROOT="${MERGESLIDE_LOCAL_ROOT:-/docker/data/$USER_NAME/$PROJECT_NAME}"
-LOG_DIR="${LOG_DIR:-logs}"
-CONFIG_FORWARD="${CONFIG_FORWARD:-configs/default_eval_num_workers0.yaml}"
-#CONFIG_FORWARD="${CONFIG_FORWARD:-configs/default_ood_eval_num_workers0.yaml}"
-CONFIG_REVERSE="${CONFIG_REVERSE:-configs/default_reverse_eval_num_workers0.yaml}"
+
+SETTING="${SETTING:-ind}"
+ORDER="${ORDER:-forward}"
+MODE="${MODE:-tcp}"
+LOG_DIR="${LOG_DIR:-}"
+if [ -n "$LOG_DIR" ] && [[ "$LOG_DIR" != /* && "$LOG_DIR" != logs && "$LOG_DIR" != logs/* ]]; then
+    LOG_DIR="logs/$LOG_DIR"
+fi
+if [ -z "$LOG_DIR" ]; then
+    LOG_DIR="logs/classil_other_metrics/${SETTING}_${ORDER}_${MODE}"
+fi
+case "$MODE" in
+    tcp|naive|all) ;;
+    *) echo "[ERROR] Unsupported MODE=$MODE (expected tcp|naive|all)" >&2; exit 1 ;;
+esac
+
+case "${SETTING}_${ORDER}" in
+    ood_forward)
+        CONFIG="${CONFIG:-configs/default_ood_eval_num_workers0.yaml}"
+        SAVE_DIR="${SAVE_DIR:-./checkpoints_ood/finetuned}"
+        MERGE_MODEL_PATH="${MERGE_MODEL_PATH:-./checkpoints_ood/merged}"
+        ;;
+    ind_forward)
+        CONFIG="${CONFIG:-configs/default_eval_num_workers0.yaml}"
+        SAVE_DIR="${SAVE_DIR:-./checkpoints/finetuned}"
+        MERGE_MODEL_PATH="${MERGE_MODEL_PATH:-./checkpoints/merged}"
+        ;;
+    ind_reverse)
+        CONFIG="${CONFIG:-configs/default_reverse_eval_num_workers0.yaml}"
+        SAVE_DIR="${SAVE_DIR:-./checkpoints/finetuned_reverse}"
+        MERGE_MODEL_PATH="${MERGE_MODEL_PATH:-./checkpoints/merged_reverse}"
+        ;;
+    ood_reverse)
+        echo "[ERROR] OOD reverse is not configured. Use SETTING=ind ORDER=reverse." >&2
+        exit 1
+        ;;
+    *)
+        echo "[ERROR] Unsupported SETTING/ORDER: SETTING=$SETTING ORDER=$ORDER (expected ind|ood with forward, or ind with reverse)" >&2
+        exit 1
+        ;;
+esac
+
 CLASSIL_WRAPPER="${CLASSIL_WRAPPER:-tools/run_classil_with_pt_features.py}"
 CLASSIL_OTHER_METRICS_ENTRYPOINT="${CLASSIL_OTHER_METRICS_ENTRYPOINT:-test_classIL_task_prompt_other_metrics.py}"
 
@@ -38,10 +75,11 @@ cd "$PROJECT_ROOT"
 
 mkdir -p "$MERGESLIDE_LOCAL_ROOT/logs" \
          "$MERGESLIDE_LOCAL_ROOT/checkpoints" \
+         "$MERGESLIDE_LOCAL_ROOT/checkpoints_ood" \
          "$MERGESLIDE_LOCAL_ROOT/sqlite" \
          "$MERGESLIDE_LOCAL_ROOT/tmp"
 
-for name in logs checkpoints; do
+for name in logs checkpoints checkpoints_ood; do
     repo_path="$PROJECT_ROOT/$name"
     local_path="$MERGESLIDE_LOCAL_ROOT/$name"
     if [ -L "$repo_path" ]; then
@@ -62,9 +100,13 @@ echo "[INFO] start at $(date)"
 echo "[INFO] project_root=$PROJECT_ROOT"
 echo "[INFO] python=$PYTHON_BIN"
 echo "[INFO] local_hot_root=$MERGESLIDE_LOCAL_ROOT"
+echo "[INFO] setting=$SETTING"
+echo "[INFO] order=$ORDER"
+echo "[INFO] mode=$MODE"
 echo "[INFO] log_dir=$LOG_DIR"
-echo "[INFO] config_forward=$CONFIG_FORWARD"
-echo "[INFO] config_reverse=$CONFIG_REVERSE"
+echo "[INFO] config=$CONFIG"
+echo "[INFO] save_dir=$SAVE_DIR"
+echo "[INFO] merge_model_path=$MERGE_MODEL_PATH"
 echo "[INFO] classil_wrapper=$CLASSIL_WRAPPER"
 echo "[INFO] other_metrics_entrypoint=$CLASSIL_OTHER_METRICS_ENTRYPOINT"
 
@@ -81,23 +123,19 @@ check_log_not_held() {
         [ -e "$fd" ] || continue
         target="$(readlink -f "$fd" 2>/dev/null || true)"
         [ "$target" = "$resolved_log" ] || continue
-
         pid="${fd#/proc/}"
         pid="${pid%%/*}"
         [ "$pid" = "$$" ] && continue
-
         state="$(awk '/^State:/ {print $2}' "/proc/$pid/status" 2>/dev/null || true)"
         cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-        case "$cmdline" in
-            torch_shm_manager*) continue ;;
-        esac
+        case "$cmdline" in torch_shm_manager*) continue ;; esac
         echo "[ERROR] $log_path is already held by PID $pid state=$state cmd=$cmdline" >&2
         echo "[ERROR] Refusing to reuse this log. Wait for the process to exit or use a different LOG_DIR." >&2
         return 1
     done
 }
 
-run_with_tee() {
+run_to_logs() {
     local result_log="$1"
     local error_log="$2"
     shift 2
@@ -107,40 +145,41 @@ run_with_tee() {
     echo "[INFO] error_log=$error_log"
     check_log_not_held "$result_log"
     check_log_not_held "$error_log"
-    "$@" 2> >(tee "$error_log" >&2) > >(tee "$result_log")
+    {
+        echo "[INFO] start at $(date)"
+        echo "[INFO] command=$*"
+    } > "$result_log"
+    {
+        echo "[INFO] start at $(date)"
+        echo "[INFO] command=$*"
+    } > "$error_log"
+    "$@" >> "$result_log" 2>> "$error_log"
 }
 
+mode_enabled() {
+    local run_mode="$1"
+    if [ "$MODE" = "all" ]; then
+        return 0
+    fi
+    [ "$MODE" = "$run_mode" ]
+}
 
-run_with_tee "$LOG_DIR/result_om_naive.log" "$LOG_DIR/error_om_naive.log" \
-    "$PYTHON_BIN" -u "$CLASSIL_WRAPPER" \
-        --entrypoint "$CLASSIL_OTHER_METRICS_ENTRYPOINT" \
-        --config "$CONFIG_FORWARD" \
-        --save_dir ./checkpoints/finetuned \
-        --merge_model_path ./checkpoints/merged \
-        --mode naive
+run_metrics_mode() {
+    local run_mode="$1"
+    run_to_logs "$LOG_DIR/result_om_${run_mode}.log" "$LOG_DIR/error_om_${run_mode}.log" \
+        "$PYTHON_BIN" -u "$CLASSIL_WRAPPER" \
+            --entrypoint "$CLASSIL_OTHER_METRICS_ENTRYPOINT" \
+            --config "$CONFIG" \
+            --save_dir "$SAVE_DIR" \
+            --merge_model_path "$MERGE_MODEL_PATH" \
+            --mode "$run_mode"
+}
 
-#run_with_tee "$LOG_DIR/result_om_tcp.log" "$LOG_DIR/error_om_tcp.log" \
-#    "$PYTHON_BIN" -u "$CLASSIL_WRAPPER" \
-#        --entrypoint "$CLASSIL_OTHER_METRICS_ENTRYPOINT" \
-#        --config "$CONFIG_FORWARD" \
-#        --save_dir ./checkpoints_ood/finetuned \
-#        --merge_model_path ./checkpoints_ood/merged \
-#        --mode tcp
-
-run_with_tee "$LOG_DIR/result_om_naive_re.log" "$LOG_DIR/error_om_naive_re.log" \
-    "$PYTHON_BIN" -u "$CLASSIL_WRAPPER" \
-        --entrypoint "$CLASSIL_OTHER_METRICS_ENTRYPOINT" \
-        --config "$CONFIG_REVERSE" \
-        --save_dir ./checkpoints/finetuned_reverse \
-        --merge_model_path ./checkpoints/merged_reverse \
-        --mode naive
-
-#run_with_tee "$LOG_DIR/result_om_tcp_re.log" "$LOG_DIR/error_om_tcp_re.log" \
-#    "$PYTHON_BIN" -u "$CLASSIL_WRAPPER" \
-#        --entrypoint "$CLASSIL_OTHER_METRICS_ENTRYPOINT" \
-#        --config "$CONFIG_REVERSE" \
-#        --save_dir ./checkpoints/finetuned_reverse \
-#        --merge_model_path ./checkpoints/merged_reverse \
-#        --mode tcp
+if mode_enabled tcp; then
+    run_metrics_mode tcp
+fi
+if mode_enabled naive; then
+    run_metrics_mode naive
+fi
 
 echo "[INFO] finished at $(date)"
