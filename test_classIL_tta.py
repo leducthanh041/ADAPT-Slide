@@ -292,6 +292,22 @@ if __name__ == "__main__":
     parser.add_argument("--episodic",          action="store_true",
                         help="Reset LN params after each slide. "
                              "Default=False (continual).")
+    # --- PATCH: bugfix / ablation flags -------------------------------
+    parser.add_argument("--use_task_diversity", action="store_true",
+                        help="[ABLATION ONLY] Re-enable v1's buggy SHOT-style "
+                             "diversity on task-routing logits. Default OFF "
+                             "(the fixed, correct behavior). Only pass this "
+                             "flag to reproduce/compare against the old bug.")
+    parser.add_argument("--no_task_agreement",  action="store_true",
+                        help="Disable the new JSD task-agreement (CoTTA-style) "
+                             "term. Default: agreement term is ON.")
+    parser.add_argument("--gamma",             type=float, default=0.5,
+                        help="Weight of the JSD task-agreement term.")
+    parser.add_argument("--select_mode",       type=str,   default="intersection",
+                        choices=["union", "intersection"],
+                        help="Confident sub-bag selection: v1 used 'union'. "
+                             "'intersection' (default) is stricter (EATA-style).")
+    # --------------------------------------------------------------------
     parser.add_argument("--verbose_loss",      action="store_true")
     parser.add_argument(
         "--result_csv",
@@ -392,6 +408,10 @@ if __name__ == "__main__":
             n_steps              = args.n_steps,
             episodic             = args.episodic,
             entropy_threshold    = args.entropy_threshold,
+            use_task_diversity   = args.use_task_diversity,
+            use_task_agreement   = (not args.no_task_agreement),
+            gamma                = args.gamma,
+            select_mode          = args.select_mode,
         )
         if efficiency_params is None:
             efficiency_params = {

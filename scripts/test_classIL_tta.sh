@@ -73,6 +73,10 @@ TTA_LR="${TTA_LR:-1e-4}"                    # LN optimizer lr
 TTA_N_STEPS="${TTA_N_STEPS:-1}"             # adapt steps/slide
 TTA_PARAM_SCOPE="${TTA_PARAM_SCOPE:-ln_only}"  # ln_only | full
 TTA_ENTROPY_THRESHOLD="${TTA_ENTROPY_THRESHOLD:-0.4}"  # WSI-level filter
+TTA_GAMMA="${TTA_GAMMA:-0.5}"                  # JSD task-agreement weight
+TTA_SELECT_MODE="${TTA_SELECT_MODE:-intersection}"  # union | intersection
+TTA_USE_TASK_DIVERSITY="${TTA_USE_TASK_DIVERSITY:-0}" # 1 reproduces old bug
+TTA_NO_TASK_AGREEMENT="${TTA_NO_TASK_AGREEMENT:-0}"   # 1 disables JSD agreement
 
 TTA_EPISODIC="${TTA_EPISODIC:-0}"
 TTA_VERBOSE_LOSS="${TTA_VERBOSE_LOSS:-1}"
@@ -142,9 +146,10 @@ echo "[INFO] config=$CONFIG_FORWARD"
 echo "[INFO] save_dir=$SAVE_DIR_FORWARD"
 echo "[INFO] merge_model_path=$MERGE_MODEL_PATH_FORWARD"
 echo "[INFO] tta_result_csv=$TTA_RESULT_CSV"
-echo "[INFO] cuda_visible_devices=$CUDA_VISIBLE_DEVICES"
+echo "[INFO] cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-<unset>}"
 echo "[INFO] tta_variants=$TTA_VARIANTS"
 echo "[INFO] TTA M=$TTA_M | K_sub=$TTA_K_SUB | top_ratio=$TTA_TOP_RATIO | alpha=$TTA_ALPHA | beta=$TTA_BETA | lr=$TTA_LR | n_steps=$TTA_N_STEPS | param_scope=$TTA_PARAM_SCOPE | entropy_threshold=$TTA_ENTROPY_THRESHOLD | reset=$EPISODIC_LABEL | verbose_loss=$TTA_VERBOSE_LOSS"
+echo "[INFO] bugfix_ablation gamma=$TTA_GAMMA | select_mode=$TTA_SELECT_MODE | use_task_diversity=$TTA_USE_TASK_DIVERSITY | no_task_agreement=$TTA_NO_TASK_AGREEMENT"
 
 entrypoint_path="$TTA_ENTRYPOINT"
 if [[ "$entrypoint_path" != /* ]]; then
@@ -222,12 +227,20 @@ TTA_ARGS=(
     --n_steps           "$TTA_N_STEPS"
     --tta_param_scope   "$TTA_PARAM_SCOPE"
     --entropy_threshold "$TTA_ENTROPY_THRESHOLD"
+    --gamma             "$TTA_GAMMA"
+    --select_mode       "$TTA_SELECT_MODE"
 )
 if [ -n "$EPISODIC_FLAG" ]; then
     TTA_ARGS+=("$EPISODIC_FLAG")
 fi
 if [ "$TTA_VERBOSE_LOSS" = "1" ]; then
     TTA_ARGS+=(--verbose_loss)
+fi
+if [ "$TTA_USE_TASK_DIVERSITY" = "1" ]; then
+    TTA_ARGS+=(--use_task_diversity)
+fi
+if [ "$TTA_NO_TASK_AGREEMENT" = "1" ]; then
+    TTA_ARGS+=(--no_task_agreement)
 fi
 if [ -n "$TTA_DIAG_DIR" ]; then
     if supports_arg "--diag_dir"; then

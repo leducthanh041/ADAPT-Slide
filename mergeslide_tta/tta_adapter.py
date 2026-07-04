@@ -30,6 +30,7 @@ from mergeslide_tta.tta_losses import (
     dual_level_tta_loss,
     l2_anchor_loss,
     select_confident_subbags,
+    select_confident_subbags_intersection,
 )
 
 
@@ -133,6 +134,10 @@ class MergeSlide_TTA(nn.Module):
         n_steps:              int   = 1,
         episodic:             bool  = False,
         entropy_threshold:    float = 0.4,
+        use_task_diversity:   bool  = False,  # PATCH: was implicitly True (the bug). Keep False.
+        use_task_agreement:   bool  = True,   # PATCH: new CoTTA-style consistency term
+        gamma:                float = 0.5,    # PATCH: weight of agreement term
+        select_mode:          str   = "intersection",  # PATCH: "union" (v1 behavior) or "intersection"
     ):
         super().__init__()
 
@@ -167,6 +172,12 @@ class MergeSlide_TTA(nn.Module):
         self.n_steps              = n_steps
         self.episodic             = episodic
         self.entropy_threshold    = entropy_threshold
+        self.use_task_diversity   = use_task_diversity
+        self.use_task_agreement   = use_task_agreement
+        self.gamma                = gamma
+        self.select_mode          = select_mode
+        assert select_mode in ("union", "intersection"), \
+            f"select_mode must be 'union' or 'intersection', got: {select_mode}"
         self.ps                   = torch.tensor(TITAN_PS_ARG).int().to(device)
 
         self.n_adapted = 0
@@ -201,7 +212,9 @@ class MergeSlide_TTA(nn.Module):
             f"M={M} sub-bags | K_sub={K_sub} | "
             f"top_ratio={top_ratio} | alpha={alpha} | beta={beta} | "
             f"lr={lr} | n_steps={n_steps} | episodic={episodic} | "
-            f"entropy_threshold={entropy_threshold}"
+            f"entropy_threshold={entropy_threshold} | "
+            f"select_mode={select_mode} | use_task_diversity={use_task_diversity} | "
+            f"use_task_agreement={use_task_agreement} | gamma={gamma}"
         )
 
     # -----------------------------------------------------------------------
@@ -277,27 +290,42 @@ class MergeSlide_TTA(nn.Module):
             t_hat        = -1
             class_logits = self._class_logits_naive(embeds)
 
-        _, idx_class = select_confident_subbags(class_logits.detach(), self.top_ratio)
-        _, idx_task  = select_confident_subbags(task_logits.detach(),  self.top_ratio)
-        sel_idx      = torch.unique(torch.cat([idx_class, idx_task]))
+        if self.select_mode == "intersection":
+            sel_idx = select_confident_subbags_intersection(
+                class_logits.detach(), task_logits.detach(), self.top_ratio
+            )
+        else:  # "union" -- v1 behavior, kept for ablation comparison
+            _, idx_class = select_confident_subbags(class_logits.detach(), self.top_ratio)
+            _, idx_task  = select_confident_subbags(task_logits.detach(),  self.top_ratio)
+            sel_idx      = torch.unique(torch.cat([idx_class, idx_task]))
 
         # Loss mode:
-        #   tcp     : class entropy + diversity + alpha * task terms
+        #   tcp     : class entropy + class diversity + alpha * (task entropy + agreement)
         #   naive   : class entropy only (alpha=0, no diversity over 13 classes)
-        #   task_il : class entropy + diversity only (alpha=0, task routing irrelevant)
+        #   task_il : class entropy + class diversity only (alpha=0, task routing irrelevant)
         if self.mode == "naive":
             effective_alpha = 0.0
-            use_diversity   = False
+            use_class_div   = False
+            use_task_div    = False
+            use_task_agree  = False
         elif self.mode == "task_il":
             effective_alpha = 0.0    # no task loss, task is already known
-            use_diversity   = True   # diversity over C_task=2~3 classes is meaningful
-        else:
+            use_class_div   = True   # diversity over C_task=2~3 classes is meaningful
+            use_task_div    = False
+            use_task_agree  = False
+        else:  # tcp
             effective_alpha = self.alpha
-            use_diversity   = True
+            use_class_div   = True
+            use_task_div    = self.use_task_diversity   # default False (bug fixed)
+            use_task_agree  = self.use_task_agreement    # default True (PATCH)
 
         loss, log = dual_level_tta_loss(
             class_logits[sel_idx], task_logits[sel_idx],
-            effective_alpha, use_diversity=use_diversity
+            effective_alpha,
+            use_class_diversity=use_class_div,
+            use_task_diversity=use_task_div,
+            use_task_agreement=use_task_agree,
+            gamma=self.gamma,
         )
 
         if self.beta > 0:
