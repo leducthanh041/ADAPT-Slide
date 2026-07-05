@@ -31,6 +31,7 @@ from mergeslide_tta.tta_losses import (
     l2_anchor_loss,
     select_confident_subbags,
     select_confident_subbags_intersection,
+    task_margin_loss,
 )
 
 
@@ -138,6 +139,21 @@ class MergeSlide_TTA(nn.Module):
         use_task_agreement:   bool  = True,   # PATCH: new CoTTA-style consistency term
         gamma:                float = 0.5,    # PATCH: weight of agreement term
         select_mode:          str   = "intersection",  # PATCH: "union" (v1 behavior) or "intersection"
+        # ------------------------------------------------------------------
+        # PATCH v2.5 -- ported from tta_engine_v3.py (prompt embedding space)
+        # ------------------------------------------------------------------
+        use_teacher:          bool  = True,    # mean-teacher (EMA of backbone)
+        ema_alpha:            float = 0.999,   # teacher EMA momentum
+        adapt_task_prompts:   bool  = True,    # allow task_prompts to be updated
+        ema_alpha_prompt:     float = 0.999,   # task_prompts EMA momentum
+        delta_margin:         float = 0.10,    # confidence gate for prompt update
+        tp_anchor_beta:       float = 0.3,     # PATCH-of-v3: anchor pull-back
+                                                # toward task_prompts_source, in
+                                                # [0,1]; 0 = pure v3 behavior
+                                                # (no anchor, full drift risk),
+                                                # 1 = prompt never moves.
+        gamma_margin:         float = 0.0,     # weight of task_margin_loss;
+                                                # 0.0 = off by default (ablation)
     ):
         super().__init__()
 
@@ -180,6 +196,33 @@ class MergeSlide_TTA(nn.Module):
             f"select_mode must be 'union' or 'intersection', got: {select_mode}"
         self.ps                   = torch.tensor(TITAN_PS_ARG).int().to(device)
 
+        # -- PATCH v2.5: prompt-space adaptation config --------------------
+        self.use_teacher          = use_teacher
+        self.ema_alpha            = ema_alpha
+        self.adapt_task_prompts   = adapt_task_prompts
+        self.ema_alpha_prompt     = ema_alpha_prompt
+        self.delta_margin         = delta_margin
+        self.tp_anchor_beta       = tp_anchor_beta
+        self.gamma_margin         = gamma_margin
+
+        # task_prompts becomes mutable (working copy) + frozen source anchor
+        self.task_prompts_source  = self.task_prompts.detach().clone()
+        # self.task_prompts (set above) is now the *working* copy, updated
+        # in-place at Phase 5b if adapt_task_prompts=True.
+
+        # Mean-teacher: EMA copy of backbone, used for routing + final
+        # inference (PETAL/CoTTA-style: teacher is more stable than the
+        # backbone currently receiving gradient updates).
+        if self.use_teacher:
+            self.teacher = deepcopy(backbone).to(device)
+            self.teacher.eval()
+            for p in self.teacher.parameters():
+                p.requires_grad_(False)
+        else:
+            self.teacher = None
+
+        self.n_prompt_updates = {}   # per-task counter, for logging/debug
+
         self.n_adapted = 0
         self.n_skipped = 0
 
@@ -214,7 +257,11 @@ class MergeSlide_TTA(nn.Module):
             f"lr={lr} | n_steps={n_steps} | episodic={episodic} | "
             f"entropy_threshold={entropy_threshold} | "
             f"select_mode={select_mode} | use_task_diversity={use_task_diversity} | "
-            f"use_task_agreement={use_task_agreement} | gamma={gamma}"
+            f"use_task_agreement={use_task_agreement} | gamma={gamma} | "
+            f"use_teacher={use_teacher} | ema_alpha={ema_alpha} | "
+            f"adapt_task_prompts={adapt_task_prompts} | ema_alpha_prompt={ema_alpha_prompt} | "
+            f"delta_margin={delta_margin} | tp_anchor_beta={tp_anchor_beta} | "
+            f"gamma_margin={gamma_margin}"
         )
 
     # -----------------------------------------------------------------------
@@ -262,6 +309,87 @@ class MergeSlide_TTA(nn.Module):
     def _class_logits_naive(self, embeds: torch.Tensor) -> torch.Tensor:
         """[N, C_total] using all_class_embeddings."""
         return embeds.float() @ self.all_class_embeddings.detach()
+
+    # -----------------------------------------------------------------------
+    # PATCH v2.5 -- Teacher EMA (ported from tta_engine_v3.py, Phase 5)
+    # -----------------------------------------------------------------------
+
+    def _ema_update_teacher(self):
+        """Update teacher = EMA(backbone). Called once per adapt step."""
+        if not self.use_teacher:
+            return
+        with torch.no_grad():
+            for tp, sp in zip(self.teacher.parameters(), self.backbone.parameters()):
+                tp.data.mul_(self.ema_alpha).add_(sp.data, alpha=1.0 - self.ema_alpha)
+
+    def _teacher_or_backbone_forward(self, features, coords):
+        """Use teacher for routing/final inference when enabled (more stable
+        than the backbone currently receiving gradient updates); fall back
+        to backbone (eval mode) otherwise."""
+        model = self.teacher if self.use_teacher else self.backbone
+        was_training = model.training
+        model.eval()
+        with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            z = model(features, coords, self.ps)
+        if was_training:
+            model.train()
+        return z.float()
+
+    # -----------------------------------------------------------------------
+    # PATCH v2.5 -- Task-prompt embedding-space adaptation
+    # (ported from tta_engine_v3.py Phase 5b, SwapPrompt-inspired,
+    #  + anchor-regularization added on top of the original v3 design to
+    #  bound drift -- see project discussion on echo-chamber / order-
+    #  dependence risk of unconstrained prompt EMA.)
+    # -----------------------------------------------------------------------
+
+    def _maybe_update_task_prompt(self, t_hat: int, z_teacher: torch.Tensor) -> bool:
+        """
+        Update task_prompts[t_hat] toward z_teacher IF the routing confidence
+        gap (top1 - top2 over task_prompts similarity) exceeds delta_margin.
+
+        z_teacher : [1, 768] (or [N,768], will be mean-pooled) -- embedding
+                    from the STABLE teacher, not the student being adapted.
+
+        Anchor step (tp_anchor_beta): after the EMA pull, blend back toward
+        task_prompts_source[t_hat] so a single task's prompt cannot drift
+        arbitrarily far over a long sequential test stream. beta=0 reproduces
+        the original tta_engine_v3.py behavior (no anchor).
+        """
+        if not self.adapt_task_prompts:
+            return False
+
+        with torch.no_grad():
+            z_mean = z_teacher.mean(dim=0, keepdim=True)          # [1, 768]
+            scores = F.softmax(z_mean @ self.task_prompts.T, dim=-1)  # [1, T]
+            top2   = scores.topk(2, dim=-1).values.squeeze(0)
+            margin = (top2[0] - top2[1]).item()
+
+            if margin <= self.delta_margin:
+                return False
+
+            target = (
+                self.ema_alpha_prompt * self.task_prompts[t_hat]
+                + (1.0 - self.ema_alpha_prompt) * z_mean.squeeze(0)
+            )
+            # anchor pull-back toward source prompt (PATCH on top of v3)
+            new_prompt = (
+                (1.0 - self.tp_anchor_beta) * target
+                + self.tp_anchor_beta * self.task_prompts_source[t_hat]
+            )
+            self.task_prompts[t_hat] = new_prompt
+
+        self.n_prompt_updates[t_hat] = self.n_prompt_updates.get(t_hat, 0) + 1
+        return True
+
+    def reset_task_prompts(self):
+        """Reset task_prompts to source. Call between tasks (default
+        behavior, mirrors tta_engine_v3.py's reset_to_source() at task
+        boundaries) to prevent cross-task drift accumulation. Pass
+        --no_reset_prompt_per_task at the CLI to disable, for ablation."""
+        with torch.no_grad():
+            self.task_prompts.copy_(self.task_prompts_source)
+        self.n_prompt_updates = {}
 
     # -----------------------------------------------------------------------
     # 1 adaptation step
@@ -334,6 +462,16 @@ class MergeSlide_TTA(nn.Module):
             loss      = loss + self.beta * reg
             log["loss/l2_reg"] = reg.item()
 
+        # PATCH v2.5: task_margin_loss (ported from tta_engine_v3.py L_task).
+        # Complementary to task_agreement_loss (JSD): agreement pulls
+        # sub-bags to CONCUR on routing, margin pushes whichever task
+        # currently leads to lead by a clear gap. Off by default
+        # (gamma_margin=0.0); enable via CLI for ablation.
+        if self.mode == "tcp" and self.gamma_margin > 0:
+            l_margin = task_margin_loss(embeds, self.task_prompts, margin=0.1)
+            loss = loss + self.gamma_margin * l_margin
+            log["loss/task_margin"] = l_margin.item()
+
         log["loss/total_with_reg"] = loss.item()
         log["adapt/t_hat"]         = t_hat
         log["adapt/n_selected"]    = sel_idx.numel()
@@ -341,6 +479,21 @@ class MergeSlide_TTA(nn.Module):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        # PATCH v2.5: teacher EMA + gated task-prompt update, using the
+        # STABLE teacher embedding (post-step) rather than the student
+        # mid-gradient-update, mirroring tta_engine_v3.py Phase 5 / 5b.
+        self._ema_update_teacher()
+        if self.mode == "tcp":
+            # Use the mean student embedding already computed this step as a
+            # cheap stand-in for a fresh teacher forward (saves 1 extra
+            # backbone pass per slide); teacher weights only just shifted by
+            # ema_alpha ~= 0.999 so the two are numerically close.
+            prompt_updated = self._maybe_update_task_prompt(
+                t_hat, embeds.detach().float()
+            )
+            log["adapt/prompt_updated"] = prompt_updated
+
         return log
 
     # -----------------------------------------------------------------------
@@ -353,10 +506,18 @@ class MergeSlide_TTA(nn.Module):
         """
         No-grad forward with full K patches.
         Returns (pred_class, probs[1,C], pred_task, entropy_value).
+
+        PATCH v2.5: when use_teacher=True, routing + final class prediction
+        use the EMA teacher (stable) instead of the backbone currently
+        receiving gradient updates, mirroring tta_engine_v3.py Phase 1d/7.
+        Also routes against the CURRENT (possibly EMA-updated) task_prompts,
+        not the frozen source.
         """
-        self.backbone.eval()
+        model = self.teacher if self.use_teacher else self.backbone
+        was_training = model.training
+        model.eval()
         with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
-            z           = self.backbone(features, coords, self.ps)
+            z           = model(features, coords, self.ps)
             task_logits = z.float() @ self.task_prompts.T
             pred_task   = int(task_logits.argmax(dim=1))
 
@@ -372,6 +533,9 @@ class MergeSlide_TTA(nn.Module):
             probs      = F.softmax(class_logits.float(), dim=1)
             pred_class = int(class_logits.argmax(dim=1))
             entropy    = -(probs * probs.clamp(min=1e-8).log()).sum().item()
+
+        if was_training and model is self.backbone:
+            model.train()
 
         return pred_class, probs.cpu(), pred_task, entropy
 
@@ -430,6 +594,10 @@ class MergeSlide_TTA(nn.Module):
     def _reset(self):
         self.backbone.load_state_dict(self._init_backbone, strict=True)
         self.optimizer.load_state_dict(self._init_optim)
+        if self.use_teacher:
+            self.teacher.load_state_dict(self._init_backbone, strict=True)
+        if self.adapt_task_prompts:
+            self.reset_task_prompts()
 
     def hard_reset(self):
         """Call after each fold to restore params and reset counters."""

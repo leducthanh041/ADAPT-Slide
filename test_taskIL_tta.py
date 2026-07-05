@@ -158,6 +158,9 @@ if __name__ == "__main__":
                         choices=["ln_only", "full"],
                         help="Backbone parameter scope for TTA.")
     parser.add_argument("--entropy_threshold", type=float, default=0.4)
+    parser.add_argument("--select_mode",       type=str,   default="intersection",
+                        choices=["union", "intersection"],
+                        help="Confident sub-bag selection; intersection matches fixed Class-IL TTA.")
     parser.add_argument("--episodic",          action="store_true")
     parser.add_argument("--verbose_loss",      action="store_true")
     parser.add_argument(
@@ -244,6 +247,7 @@ if __name__ == "__main__":
                 n_steps           = args.n_steps,
                 episodic          = args.episodic,
                 entropy_threshold = args.entropy_threshold,
+                select_mode       = args.select_mode,
             )
             if efficiency_params is None:
                 efficiency_params = {
@@ -313,6 +317,7 @@ if __name__ == "__main__":
         "mode": "task_il",
         "param_scope": args.tta_param_scope,
         "tta_steps": int(args.n_steps),
+        "select_mode": args.select_mode,
         "patches_per_wsi": int(K_PATCHES),
         "subbags": int(args.M),
         "patches_per_subbag": int(args.K_sub),
