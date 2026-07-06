@@ -92,10 +92,11 @@ TTA_TP_ANCHOR_BETA="${TTA_TP_ANCHOR_BETA:-0.3}"
 TTA_GAMMA_MARGIN="${TTA_GAMMA_MARGIN:-0.0}"
 TTA_NO_RESET_PROMPT_PER_TASK="${TTA_NO_RESET_PROMPT_PER_TASK:-0}"
 
-TTA_EPISODIC="${TTA_EPISODIC:-0}"
 TTA_VERBOSE_LOSS="${TTA_VERBOSE_LOSS:-1}"
 TTA_DIAG_DIR="${TTA_DIAG_DIR:-}"
 TTA_RESULT_CSV="${TTA_RESULT_CSV:-}"
+TTA_IND_BEST_CONFIG="${TTA_IND_BEST_CONFIG:-configs/ind/best_config.json}"
+TTA_OOD_BEST_CONFIG="${TTA_OOD_BEST_CONFIG:-configs/ood/best_config.json}"
 
 # ---------------------------------------------------------------------------
 # Python binary  ging ht test_classIL.sh
@@ -110,6 +111,62 @@ if [ -z "${PYTHON_BIN:-}" ]; then
 fi
 
 cd "$PROJECT_ROOT"
+
+# ---------------------------------------------------------------------------
+# Fixed best hyperparameters.
+# IND forward/reverse use the selected IND config; OOD uses the selected OOD
+# config. Missing best config is treated as an error to avoid silently running
+# script defaults after hyperparameter tuning is complete.
+# ---------------------------------------------------------------------------
+ACTIVE_BEST_CONFIG=""
+ACTIVE_BEST_LABEL=""
+if [ "$SETTING" = "ind" ]; then
+    ACTIVE_BEST_CONFIG="$TTA_IND_BEST_CONFIG"
+    ACTIVE_BEST_LABEL="IND"
+elif [ "$SETTING" = "ood" ]; then
+    ACTIVE_BEST_CONFIG="$TTA_OOD_BEST_CONFIG"
+    ACTIVE_BEST_LABEL="OOD"
+fi
+if [ -n "$ACTIVE_BEST_CONFIG" ]; then
+    if [ ! -f "$ACTIVE_BEST_CONFIG" ]; then
+        echo "[ERROR] ${ACTIVE_BEST_LABEL} best TTA config not found: $ACTIVE_BEST_CONFIG" >&2
+        exit 1
+    else
+    eval "$("$PYTHON_BIN" - "$ACTIVE_BEST_CONFIG" <<'PY'
+import json
+import shlex
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+
+mapping = {
+    "M": "TTA_M",
+    "K_sub": "TTA_K_SUB",
+    "top_ratio": "TTA_TOP_RATIO",
+    "alpha": "TTA_ALPHA",
+    "beta": "TTA_BETA",
+    "lr": "TTA_LR",
+    "n_steps": "TTA_N_STEPS",
+    "tta_param_scope": "TTA_PARAM_SCOPE",
+    "entropy_threshold": "TTA_ENTROPY_THRESHOLD",
+    "gamma": "TTA_GAMMA",
+    "select_mode": "TTA_SELECT_MODE",
+    "ema_alpha": "TTA_EMA_ALPHA",
+    "ema_alpha_prompt": "TTA_EMA_ALPHA_PROMPT",
+    "delta_margin": "TTA_DELTA_MARGIN",
+    "tp_anchor_beta": "TTA_TP_ANCHOR_BETA",
+    "gamma_margin": "TTA_GAMMA_MARGIN",
+}
+for key, env_name in mapping.items():
+    if key in cfg:
+        print(f"{env_name}={shlex.quote(str(cfg[key]))}")
+PY
+)"
+    echo "[INFO] loaded $ACTIVE_BEST_LABEL best TTA config: $ACTIVE_BEST_CONFIG"
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Directory + symlink setup  ging ht test_classIL.sh
@@ -140,11 +197,9 @@ export HDF5_USE_FILE_LOCKING="${HDF5_USE_FILE_LOCKING:-FALSE}"
 # ---------------------------------------------------------------------------
 # Logging info
 # ---------------------------------------------------------------------------
-EPISODIC_LABEL="continual"
-EPISODIC_FLAG=""
-if [ "${TTA_EPISODIC}" = "1" ]; then
-    EPISODIC_LABEL="episodic"
-    EPISODIC_FLAG="--episodic"
+RESET_LABEL="continual"
+if [ "${TTA_EPISODIC:-0}" = "1" ]; then
+    echo "[WARN] TTA_EPISODIC=1 is ignored. MergeSlide-TTA scripts always run continual adaptation." >&2
 fi
 
 echo "[INFO] start at $(date)"
@@ -162,7 +217,7 @@ echo "[INFO] merge_model_path=$MERGE_MODEL_PATH_FORWARD"
 echo "[INFO] tta_result_csv=$TTA_RESULT_CSV"
 echo "[INFO] cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-<unset>}"
 echo "[INFO] tta_variants=$TTA_VARIANTS"
-echo "[INFO] TTA M=$TTA_M | K_sub=$TTA_K_SUB | top_ratio=$TTA_TOP_RATIO | alpha=$TTA_ALPHA | beta=$TTA_BETA | lr=$TTA_LR | n_steps=$TTA_N_STEPS | param_scope=$TTA_PARAM_SCOPE | entropy_threshold=$TTA_ENTROPY_THRESHOLD | reset=$EPISODIC_LABEL | verbose_loss=$TTA_VERBOSE_LOSS"
+echo "[INFO] TTA M=$TTA_M | K_sub=$TTA_K_SUB | top_ratio=$TTA_TOP_RATIO | alpha=$TTA_ALPHA | beta=$TTA_BETA | lr=$TTA_LR | n_steps=$TTA_N_STEPS | param_scope=$TTA_PARAM_SCOPE | entropy_threshold=$TTA_ENTROPY_THRESHOLD | reset=$RESET_LABEL | verbose_loss=$TTA_VERBOSE_LOSS"
 echo "[INFO] bugfix_ablation gamma=$TTA_GAMMA | select_mode=$TTA_SELECT_MODE | use_task_diversity=$TTA_USE_TASK_DIVERSITY | no_task_agreement=$TTA_NO_TASK_AGREEMENT"
 echo "[INFO] prompt_adapt no_teacher=$TTA_NO_TEACHER | ema_alpha=$TTA_EMA_ALPHA | no_adapt_prompts=$TTA_NO_ADAPT_PROMPTS | ema_alpha_prompt=$TTA_EMA_ALPHA_PROMPT | delta_margin=$TTA_DELTA_MARGIN | tp_anchor_beta=$TTA_TP_ANCHOR_BETA | gamma_margin=$TTA_GAMMA_MARGIN | no_reset_prompt_per_task=$TTA_NO_RESET_PROMPT_PER_TASK | naive_teacher_mode=always_no_teacher"
 
@@ -250,9 +305,6 @@ TTA_ARGS=(
     --tp_anchor_beta    "$TTA_TP_ANCHOR_BETA"
     --gamma_margin      "$TTA_GAMMA_MARGIN"
 )
-if [ -n "$EPISODIC_FLAG" ]; then
-    TTA_ARGS+=("$EPISODIC_FLAG")
-fi
 if [ "$TTA_VERBOSE_LOSS" = "1" ]; then
     TTA_ARGS+=(--verbose_loss)
 fi

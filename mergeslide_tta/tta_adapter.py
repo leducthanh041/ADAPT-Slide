@@ -168,6 +168,10 @@ class MergeSlide_TTA(nn.Module):
         if param_scope not in ("ln_only", "full"):
             raise ValueError(f"param_scope must be 'ln_only' or 'full', got: {param_scope}")
 
+        if episodic:
+            print("[WARN] episodic=True is ignored; MergeSlide-TTA always uses continual adaptation without reset.")
+        episodic = False
+
         self.param_scope          = param_scope
         self.backbone             = configure_backbone_for_tta(backbone, param_scope)
         self.device               = device
@@ -254,7 +258,7 @@ class MergeSlide_TTA(nn.Module):
             f"param_scope={param_scope} | trainable_params={n_trainable:,}/{n_total:,} | "
             f"M={M} sub-bags | K_sub={K_sub} | "
             f"top_ratio={top_ratio} | alpha={alpha} | beta={beta} | "
-            f"lr={lr} | n_steps={n_steps} | episodic={episodic} | "
+            f"lr={lr} | n_steps={n_steps} | reset=continual | "
             f"entropy_threshold={entropy_threshold} | "
             f"select_mode={select_mode} | use_task_diversity={use_task_diversity} | "
             f"use_task_agreement={use_task_agreement} | gamma={gamma} | "

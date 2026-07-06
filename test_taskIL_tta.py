@@ -161,7 +161,11 @@ if __name__ == "__main__":
     parser.add_argument("--select_mode",       type=str,   default="intersection",
                         choices=["union", "intersection"],
                         help="Confident sub-bag selection; intersection matches fixed Class-IL TTA.")
-    parser.add_argument("--episodic",          action="store_true")
+    parser.add_argument(
+        "--episodic",
+        action="store_true",
+        help="[Deprecated/Ignored] MergeSlide-TTA now always uses continual adaptation without reset.",
+    )
     parser.add_argument("--verbose_loss",      action="store_true")
     parser.add_argument(
         "--efficiency_json",
@@ -171,6 +175,9 @@ if __name__ == "__main__":
     )
     # Note: --alpha not exposed for task_il (always 0.0 internally)
     args = parser.parse_args()
+    if args.episodic:
+        print("[WARN] --episodic is ignored; running continual adaptation without reset.")
+    args.episodic = False
 
     local_hot_root        = ensure_local_hot_storage()
     args.save_dir         = str(resolve_hot_path(args.save_dir,         local_hot_root))

@@ -14,7 +14,7 @@ TTA hyperparams:
   --beta               : L2 anchor weight, default=1.0
   --lr                 : LN optimizer learning rate, default=1e-4
   --n_steps            : adapt steps per slide, default=1
-  --episodic           : flag -- reset LN after each slide (default=False = continual)
+  --episodic           : deprecated/ignored; adaptation is always continual
   --entropy_threshold  : only TTA when entropy >= threshold, default=0.4
                          Set 0.0 to TTA all slides.
 
@@ -290,8 +290,8 @@ if __name__ == "__main__":
                         help="Only TTA when slide entropy >= threshold. "
                              "Set 0.0 to TTA all slides.")
     parser.add_argument("--episodic",          action="store_true",
-                        help="Reset LN params after each slide. "
-                             "Default=False (continual).")
+                        help="[Deprecated/Ignored] MergeSlide-TTA now always "
+                             "uses continual adaptation without per-slide reset.")
     # --- PATCH: bugfix / ablation flags -------------------------------
     parser.add_argument("--use_task_diversity", action="store_true",
                         help="[ABLATION ONLY] Re-enable v1's buggy SHOT-style "
@@ -352,6 +352,9 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    if args.episodic:
+        print("[WARN] --episodic is ignored; running continual adaptation without reset.")
+    args.episodic = False
     if args.mode == "naive":
         # Naive Class-IL does not use TCP/task prompt routing. Keep the
         # teacher branch disabled by default even when users call this
