@@ -174,6 +174,34 @@ def select_confident_subbags_intersection(
     return torch.tensor(inter, dtype=torch.long, device=class_logits.device)
 
 
+def task_margin_loss(
+    embeds:       torch.Tensor,
+    task_prompts: torch.Tensor,
+    margin:       float = 0.1,
+) -> torch.Tensor:
+    """
+    PATCH (ported from tta_engine_v3.py, Module C / L_task):
+    Push slide embeddings to separate the top-1 routed task from the
+    runner-up task in prompt-similarity space, WITHOUT assuming the
+    current routing is correct (unlike an entropy/CE loss against a
+    pseudo task-label). This is complementary to task_agreement_loss:
+      - task_agreement_loss (JSD) : sub-bags of the SAME slide should
+        AGREE with each other on which task they belong to.
+      - task_margin_loss (this)   : whichever task currently leads should
+        lead by a clear margin over the runner-up (sharper routing surface).
+
+    embeds       : [N, 768] student embeddings (grad-enabled)
+    task_prompts : [T, 768] (use .detach() at call site -- this loss should
+                   only shape the embedding space, not the prompts directly)
+    margin       : desired gap between top-1 and top-2 task score
+
+    Returns 0 when the gap already exceeds `margin` for a given sub-bag.
+    """
+    scores = embeds.float() @ task_prompts.detach().T          # [N, T]
+    top2   = scores.topk(2, dim=-1).values                     # [N, 2]
+    return F.relu(top2[:, 1] - top2[:, 0] + margin).mean()
+
+
 def l2_anchor_loss(
     params:   List[torch.Tensor],
     params_0: List[torch.Tensor],

@@ -14,7 +14,7 @@ TTA hyperparams:
   --beta               : L2 anchor weight, default=1.0
   --lr                 : LN optimizer learning rate, default=1e-4
   --n_steps            : adapt steps per slide, default=1
-  --episodic           : flag -- reset LN after each slide (default=False = continual)
+  --episodic           : deprecated/ignored; adaptation is always continual
   --entropy_threshold  : only TTA when entropy >= threshold, default=0.4
                          Set 0.0 to TTA all slides.
 
@@ -290,8 +290,8 @@ if __name__ == "__main__":
                         help="Only TTA when slide entropy >= threshold. "
                              "Set 0.0 to TTA all slides.")
     parser.add_argument("--episodic",          action="store_true",
-                        help="Reset LN params after each slide. "
-                             "Default=False (continual).")
+                        help="[Deprecated/Ignored] MergeSlide-TTA now always "
+                             "uses continual adaptation without per-slide reset.")
     # --- PATCH: bugfix / ablation flags -------------------------------
     parser.add_argument("--use_task_diversity", action="store_true",
                         help="[ABLATION ONLY] Re-enable v1's buggy SHOT-style "
@@ -308,6 +308,35 @@ if __name__ == "__main__":
                         help="Confident sub-bag selection: v1 used 'union'. "
                              "'intersection' (default) is stricter (EATA-style).")
     # --------------------------------------------------------------------
+    # PATCH v2.5 -- prompt embedding-space adaptation (ported from
+    # tta_engine_v3.py, teacher EMA + gated task-prompt update + margin loss)
+    # --------------------------------------------------------------------
+    parser.add_argument("--no_teacher",        action="store_true",
+                        help="Disable mean-teacher; route/infer with the "
+                             "backbone being adapted directly (v1/v2 behavior).")
+    parser.add_argument("--ema_alpha",         type=float, default=0.999,
+                        help="Teacher EMA momentum.")
+    parser.add_argument("--no_adapt_prompts",  action="store_true",
+                        help="Disable task-prompt EMA update; task_prompts "
+                             "stay frozen (v1/v2 behavior).")
+    parser.add_argument("--ema_alpha_prompt",  type=float, default=0.999,
+                        help="Task-prompt EMA momentum.")
+    parser.add_argument("--delta_margin",      type=float, default=0.10,
+                        help="Confidence-gap gate for task-prompt update "
+                             "(top1-top2 softmax score over task_prompts).")
+    parser.add_argument("--tp_anchor_beta",    type=float, default=0.3,
+                        help="Anchor pull-back toward source task_prompts "
+                             "in [0,1]. 0 = original tta_engine_v3.py "
+                             "behavior (no anchor, unbounded drift). "
+                             "1 = prompts never move. Default 0.3.")
+    parser.add_argument("--gamma_margin",      type=float, default=0.0,
+                        help="Weight of task_margin_loss (0.0 = off).")
+    parser.add_argument("--no_reset_prompt_per_task", action="store_true",
+                        help="Do NOT reset task_prompts to source between "
+                             "tasks. Default: reset per task (bounds "
+                             "cross-task drift). Pass this flag only for "
+                             "ablation / order-dependence stress-testing.")
+    # --------------------------------------------------------------------
     parser.add_argument("--verbose_loss",      action="store_true")
     parser.add_argument(
         "--result_csv",
@@ -323,6 +352,14 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    if args.episodic:
+        print("[WARN] --episodic is ignored; running continual adaptation without reset.")
+    args.episodic = False
+    if args.mode == "naive":
+        # Naive Class-IL does not use TCP/task prompt routing. Keep the
+        # teacher branch disabled by default even when users call this
+        # entrypoint directly without the bash runner.
+        args.no_teacher = True
 
     local_hot_root        = ensure_local_hot_storage()
     args.save_dir         = str(resolve_hot_path(args.save_dir,         local_hot_root))
@@ -412,6 +449,13 @@ if __name__ == "__main__":
             use_task_agreement   = (not args.no_task_agreement),
             gamma                = args.gamma,
             select_mode          = args.select_mode,
+            use_teacher          = (not args.no_teacher),
+            ema_alpha            = args.ema_alpha,
+            adapt_task_prompts   = (not args.no_adapt_prompts),
+            ema_alpha_prompt     = args.ema_alpha_prompt,
+            delta_margin         = args.delta_margin,
+            tp_anchor_beta       = args.tp_anchor_beta,
+            gamma_margin         = args.gamma_margin,
         )
         if efficiency_params is None:
             efficiency_params = {
@@ -434,6 +478,14 @@ if __name__ == "__main__":
 
         for task_id in range(num_tasks):
             _, _, test_loader = seq_dataset.get_data_loaders(fold_id, task_id)
+
+            # PATCH v2.5: reset task_prompts to source before starting a new
+            # task's sequential test stream (default). This bounds any
+            # prompt-EMA drift to within a single task's slides, mirroring
+            # tta_engine_v3.py's reset_to_source() at task boundaries.
+            # Pass --no_reset_prompt_per_task to disable (ablation only).
+            if (not args.no_reset_prompt_per_task) and (not args.no_adapt_prompts):
+                tta_model.reset_task_prompts()
 
             result = eval_task_tta(
                 test_loader          = test_loader,
@@ -463,7 +515,8 @@ if __name__ == "__main__":
             print(
                 f"  [Fold {fold_id}] Task {task_id} ({seq_dataset.task_names[task_id]}) "
                 f"ACC={task_acc*100:.4f}% BAcc={task_bacc*100:.4f}% "
-                f"routing_acc={task_routing_acc*100:.4f}%"
+                f"routing_acc={task_routing_acc*100:.4f}% "
+                f"prompt_updates={tta_model.n_prompt_updates.get(task_id, 0)}"
             )
             all_results.append({
                 "fold": fold_id,

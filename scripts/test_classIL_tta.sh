@@ -70,7 +70,7 @@ TTA_TOP_RATIO="${TTA_TOP_RATIO:-0.5}"       # confident sub-bag ratio
 TTA_ALPHA="${TTA_ALPHA:-0.5}"               # task loss weight
 TTA_BETA="${TTA_BETA:-1.0}"                 # L2 anchor weight
 TTA_LR="${TTA_LR:-1e-4}"                    # LN optimizer lr
-TTA_N_STEPS="${TTA_N_STEPS:-1}"             # adapt steps/slide
+TTA_N_STEPS="${TTA_N_STEPS:-5}"             # best continual setting from n_steps sweep
 TTA_PARAM_SCOPE="${TTA_PARAM_SCOPE:-ln_only}"  # ln_only | full
 TTA_ENTROPY_THRESHOLD="${TTA_ENTROPY_THRESHOLD:-0.4}"  # WSI-level filter
 TTA_GAMMA="${TTA_GAMMA:-0.5}"                  # JSD task-agreement weight
@@ -78,10 +78,25 @@ TTA_SELECT_MODE="${TTA_SELECT_MODE:-intersection}"  # union | intersection
 TTA_USE_TASK_DIVERSITY="${TTA_USE_TASK_DIVERSITY:-0}" # 1 reproduces old bug
 TTA_NO_TASK_AGREEMENT="${TTA_NO_TASK_AGREEMENT:-0}"   # 1 disables JSD agreement
 
-TTA_EPISODIC="${TTA_EPISODIC:-0}"
+# v2.5 prompt embedding-space adaptation.
+# TCP default follows the prompt-adapt baseline:
+#   teacher EMA on, task-prompt EMA on, source-anchor enabled.
+# Naive does not use TCP routing prompts, so it is always run with
+# --no_teacher. TCP can still use teacher EMA.
+TTA_NO_TEACHER="${TTA_NO_TEACHER:-0}"
+TTA_EMA_ALPHA="${TTA_EMA_ALPHA:-0.999}"
+TTA_NO_ADAPT_PROMPTS="${TTA_NO_ADAPT_PROMPTS:-0}"
+TTA_EMA_ALPHA_PROMPT="${TTA_EMA_ALPHA_PROMPT:-0.999}"
+TTA_DELTA_MARGIN="${TTA_DELTA_MARGIN:-0.10}"
+TTA_TP_ANCHOR_BETA="${TTA_TP_ANCHOR_BETA:-0.3}"
+TTA_GAMMA_MARGIN="${TTA_GAMMA_MARGIN:-0.0}"
+TTA_NO_RESET_PROMPT_PER_TASK="${TTA_NO_RESET_PROMPT_PER_TASK:-0}"
+
 TTA_VERBOSE_LOSS="${TTA_VERBOSE_LOSS:-1}"
 TTA_DIAG_DIR="${TTA_DIAG_DIR:-}"
-TTA_RESULT_CSV="${TTA_RESULT_CSV:-$LOG_DIR/tta_v1_tcp_routing_results.csv}"
+TTA_RESULT_CSV="${TTA_RESULT_CSV:-}"
+TTA_IND_BEST_CONFIG="${TTA_IND_BEST_CONFIG:-configs/ind/best_config.json}"
+TTA_OOD_BEST_CONFIG="${TTA_OOD_BEST_CONFIG:-configs/ood/best_config.json}"
 
 # ---------------------------------------------------------------------------
 # Python binary  ging ht test_classIL.sh
@@ -96,6 +111,62 @@ if [ -z "${PYTHON_BIN:-}" ]; then
 fi
 
 cd "$PROJECT_ROOT"
+
+# ---------------------------------------------------------------------------
+# Fixed best hyperparameters.
+# IND forward/reverse use the selected IND config; OOD uses the selected OOD
+# config. Missing best config is treated as an error to avoid silently running
+# script defaults after hyperparameter tuning is complete.
+# ---------------------------------------------------------------------------
+ACTIVE_BEST_CONFIG=""
+ACTIVE_BEST_LABEL=""
+if [ "$SETTING" = "ind" ]; then
+    ACTIVE_BEST_CONFIG="$TTA_IND_BEST_CONFIG"
+    ACTIVE_BEST_LABEL="IND"
+elif [ "$SETTING" = "ood" ]; then
+    ACTIVE_BEST_CONFIG="$TTA_OOD_BEST_CONFIG"
+    ACTIVE_BEST_LABEL="OOD"
+fi
+if [ -n "$ACTIVE_BEST_CONFIG" ]; then
+    if [ ! -f "$ACTIVE_BEST_CONFIG" ]; then
+        echo "[ERROR] ${ACTIVE_BEST_LABEL} best TTA config not found: $ACTIVE_BEST_CONFIG" >&2
+        exit 1
+    else
+    eval "$("$PYTHON_BIN" - "$ACTIVE_BEST_CONFIG" <<'PY'
+import json
+import shlex
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+
+mapping = {
+    "M": "TTA_M",
+    "K_sub": "TTA_K_SUB",
+    "top_ratio": "TTA_TOP_RATIO",
+    "alpha": "TTA_ALPHA",
+    "beta": "TTA_BETA",
+    "lr": "TTA_LR",
+    "n_steps": "TTA_N_STEPS",
+    "tta_param_scope": "TTA_PARAM_SCOPE",
+    "entropy_threshold": "TTA_ENTROPY_THRESHOLD",
+    "gamma": "TTA_GAMMA",
+    "select_mode": "TTA_SELECT_MODE",
+    "ema_alpha": "TTA_EMA_ALPHA",
+    "ema_alpha_prompt": "TTA_EMA_ALPHA_PROMPT",
+    "delta_margin": "TTA_DELTA_MARGIN",
+    "tp_anchor_beta": "TTA_TP_ANCHOR_BETA",
+    "gamma_margin": "TTA_GAMMA_MARGIN",
+}
+for key, env_name in mapping.items():
+    if key in cfg:
+        print(f"{env_name}={shlex.quote(str(cfg[key]))}")
+PY
+)"
+    echo "[INFO] loaded $ACTIVE_BEST_LABEL best TTA config: $ACTIVE_BEST_CONFIG"
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Directory + symlink setup  ging ht test_classIL.sh
@@ -126,11 +197,9 @@ export HDF5_USE_FILE_LOCKING="${HDF5_USE_FILE_LOCKING:-FALSE}"
 # ---------------------------------------------------------------------------
 # Logging info
 # ---------------------------------------------------------------------------
-EPISODIC_LABEL="continual"
-EPISODIC_FLAG=""
-if [ "${TTA_EPISODIC}" = "1" ]; then
-    EPISODIC_LABEL="episodic"
-    EPISODIC_FLAG="--episodic"
+RESET_LABEL="continual"
+if [ "${TTA_EPISODIC:-0}" = "1" ]; then
+    echo "[WARN] TTA_EPISODIC=1 is ignored. MergeSlide-TTA scripts always run continual adaptation." >&2
 fi
 
 echo "[INFO] start at $(date)"
@@ -148,8 +217,9 @@ echo "[INFO] merge_model_path=$MERGE_MODEL_PATH_FORWARD"
 echo "[INFO] tta_result_csv=$TTA_RESULT_CSV"
 echo "[INFO] cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-<unset>}"
 echo "[INFO] tta_variants=$TTA_VARIANTS"
-echo "[INFO] TTA M=$TTA_M | K_sub=$TTA_K_SUB | top_ratio=$TTA_TOP_RATIO | alpha=$TTA_ALPHA | beta=$TTA_BETA | lr=$TTA_LR | n_steps=$TTA_N_STEPS | param_scope=$TTA_PARAM_SCOPE | entropy_threshold=$TTA_ENTROPY_THRESHOLD | reset=$EPISODIC_LABEL | verbose_loss=$TTA_VERBOSE_LOSS"
+echo "[INFO] TTA M=$TTA_M | K_sub=$TTA_K_SUB | top_ratio=$TTA_TOP_RATIO | alpha=$TTA_ALPHA | beta=$TTA_BETA | lr=$TTA_LR | n_steps=$TTA_N_STEPS | param_scope=$TTA_PARAM_SCOPE | entropy_threshold=$TTA_ENTROPY_THRESHOLD | reset=$RESET_LABEL | verbose_loss=$TTA_VERBOSE_LOSS"
 echo "[INFO] bugfix_ablation gamma=$TTA_GAMMA | select_mode=$TTA_SELECT_MODE | use_task_diversity=$TTA_USE_TASK_DIVERSITY | no_task_agreement=$TTA_NO_TASK_AGREEMENT"
+echo "[INFO] prompt_adapt no_teacher=$TTA_NO_TEACHER | ema_alpha=$TTA_EMA_ALPHA | no_adapt_prompts=$TTA_NO_ADAPT_PROMPTS | ema_alpha_prompt=$TTA_EMA_ALPHA_PROMPT | delta_margin=$TTA_DELTA_MARGIN | tp_anchor_beta=$TTA_TP_ANCHOR_BETA | gamma_margin=$TTA_GAMMA_MARGIN | no_reset_prompt_per_task=$TTA_NO_RESET_PROMPT_PER_TASK | naive_teacher_mode=always_no_teacher"
 
 entrypoint_path="$TTA_ENTRYPOINT"
 if [[ "$entrypoint_path" != /* ]]; then
@@ -229,10 +299,12 @@ TTA_ARGS=(
     --entropy_threshold "$TTA_ENTROPY_THRESHOLD"
     --gamma             "$TTA_GAMMA"
     --select_mode       "$TTA_SELECT_MODE"
+    --ema_alpha         "$TTA_EMA_ALPHA"
+    --ema_alpha_prompt  "$TTA_EMA_ALPHA_PROMPT"
+    --delta_margin      "$TTA_DELTA_MARGIN"
+    --tp_anchor_beta    "$TTA_TP_ANCHOR_BETA"
+    --gamma_margin      "$TTA_GAMMA_MARGIN"
 )
-if [ -n "$EPISODIC_FLAG" ]; then
-    TTA_ARGS+=("$EPISODIC_FLAG")
-fi
 if [ "$TTA_VERBOSE_LOSS" = "1" ]; then
     TTA_ARGS+=(--verbose_loss)
 fi
@@ -242,6 +314,15 @@ fi
 if [ "$TTA_NO_TASK_AGREEMENT" = "1" ]; then
     TTA_ARGS+=(--no_task_agreement)
 fi
+if [ "$TTA_NO_TEACHER" = "1" ]; then
+    TTA_ARGS+=(--no_teacher)
+fi
+if [ "$TTA_NO_ADAPT_PROMPTS" = "1" ]; then
+    TTA_ARGS+=(--no_adapt_prompts)
+fi
+if [ "$TTA_NO_RESET_PROMPT_PER_TASK" = "1" ]; then
+    TTA_ARGS+=(--no_reset_prompt_per_task)
+fi
 if [ -n "$TTA_DIAG_DIR" ]; then
     if supports_arg "--diag_dir"; then
         TTA_ARGS+=(--diag_dir "$TTA_DIAG_DIR")
@@ -249,13 +330,27 @@ if [ -n "$TTA_DIAG_DIR" ]; then
         echo "[WARN] $TTA_ENTRYPOINT does not support --diag_dir; skipping TTA_DIAG_DIR=$TTA_DIAG_DIR" >&2
     fi
 fi
-if [ -n "$TTA_RESULT_CSV" ]; then
-    if supports_arg "--result_csv"; then
-        TTA_ARGS+=(--result_csv "$TTA_RESULT_CSV")
+result_csv_for() {
+    local variant="$1"
+    if [ -n "$TTA_RESULT_CSV" ]; then
+        if [ "$TTA_VARIANTS" = "all" ]; then
+            local base="${TTA_RESULT_CSV%.csv}"
+            echo "${base}_${variant}.csv"
+        else
+            echo "$TTA_RESULT_CSV"
+        fi
     else
-        echo "[WARN] $TTA_ENTRYPOINT does not support --result_csv; routing CSV will not be saved" >&2
+        echo "$LOG_DIR/tta_${variant}_routing_results.csv"
     fi
-fi
+}
+
+append_result_csv_arg() {
+    local variant="$1"
+    if supports_arg "--result_csv"; then
+        echo "--result_csv"
+        echo "$(result_csv_for "$variant")"
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # Run selected Class-IL TTA mode on selected protocol.
@@ -276,10 +371,12 @@ if variant_enabled tcp; then
             --save_dir         "$SAVE_DIR_FORWARD" \
             --merge_model_path "$MERGE_MODEL_PATH_FORWARD" \
             --mode tcp \
-            "${TTA_ARGS[@]}"
+            "${TTA_ARGS[@]}" \
+            $(append_result_csv_arg tcp)
 fi
 
 if variant_enabled naive; then
+   NAIVE_EXTRA_ARGS=(--no_teacher)
    run_to_logs \
        "$LOG_DIR/result_tta_naive.log" \
        "$LOG_DIR/error_tta_naive.log" \
@@ -288,7 +385,9 @@ if variant_enabled naive; then
            --save_dir         "$SAVE_DIR_FORWARD" \
            --merge_model_path "$MERGE_MODEL_PATH_FORWARD" \
            --mode naive \
-           "${TTA_ARGS[@]}"
+           "${TTA_ARGS[@]}" \
+           "${NAIVE_EXTRA_ARGS[@]}" \
+           $(append_result_csv_arg naive)
 fi
 
 echo "[INFO] finished at $(date)"

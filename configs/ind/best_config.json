@@ -1,0 +1,18 @@
+{
+  "K_sub": "300",
+  "M": "8",
+  "alpha": "0.25",
+  "beta": "2.0",
+  "delta_margin": "0.1",
+  "ema_alpha": "0.999",
+  "ema_alpha_prompt": "0.999",
+  "entropy_threshold": "0.4",
+  "gamma": "0.3",
+  "gamma_margin": "0.05",
+  "lr": "0.0001",
+  "n_steps": "5",
+  "select_mode": "intersection",
+  "top_ratio": "0.7",
+  "tp_anchor_beta": "0.1",
+  "tta_param_scope": "ln_only"
+}

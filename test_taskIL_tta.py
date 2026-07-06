@@ -158,7 +158,14 @@ if __name__ == "__main__":
                         choices=["ln_only", "full"],
                         help="Backbone parameter scope for TTA.")
     parser.add_argument("--entropy_threshold", type=float, default=0.4)
-    parser.add_argument("--episodic",          action="store_true")
+    parser.add_argument("--select_mode",       type=str,   default="intersection",
+                        choices=["union", "intersection"],
+                        help="Confident sub-bag selection; intersection matches fixed Class-IL TTA.")
+    parser.add_argument(
+        "--episodic",
+        action="store_true",
+        help="[Deprecated/Ignored] MergeSlide-TTA now always uses continual adaptation without reset.",
+    )
     parser.add_argument("--verbose_loss",      action="store_true")
     parser.add_argument(
         "--efficiency_json",
@@ -168,6 +175,9 @@ if __name__ == "__main__":
     )
     # Note: --alpha not exposed for task_il (always 0.0 internally)
     args = parser.parse_args()
+    if args.episodic:
+        print("[WARN] --episodic is ignored; running continual adaptation without reset.")
+    args.episodic = False
 
     local_hot_root        = ensure_local_hot_storage()
     args.save_dir         = str(resolve_hot_path(args.save_dir,         local_hot_root))
@@ -244,6 +254,7 @@ if __name__ == "__main__":
                 n_steps           = args.n_steps,
                 episodic          = args.episodic,
                 entropy_threshold = args.entropy_threshold,
+                select_mode       = args.select_mode,
             )
             if efficiency_params is None:
                 efficiency_params = {
@@ -313,6 +324,7 @@ if __name__ == "__main__":
         "mode": "task_il",
         "param_scope": args.tta_param_scope,
         "tta_steps": int(args.n_steps),
+        "select_mode": args.select_mode,
         "patches_per_wsi": int(K_PATCHES),
         "subbags": int(args.M),
         "patches_per_subbag": int(args.K_sub),
