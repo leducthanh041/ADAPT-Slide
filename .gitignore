@@ -101,6 +101,9 @@ old_code_mergeslide/
 related_work/
 checkpoints_nfs_backup_*/
 docs_old/
+docs/
+tools/compute_prefix_continual_metrics.py
+tools/random_search_classil_tta.py
 
 # ---------------------------------------------------------------------------
 # One-off local maintenance scripts
