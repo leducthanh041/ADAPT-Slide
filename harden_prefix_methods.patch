@@ -1,0 +1,107 @@
+*** Begin Patch
+*** Update File: AdaMerging/scripts/run_wsi_adamerging.sh
+@@
+ WSI_NUM_WORKERS="${WSI_NUM_WORKERS:-4}"
++WSI_PERSISTENT_WORKERS="${WSI_PERSISTENT_WORKERS:-0}"
+ export WSI_NUM_WORKERS
++export WSI_PERSISTENT_WORKERS
+*** Update File: AdaRank/scripts/run_wsi_adarank.sh
+@@
+ WSI_NUM_WORKERS="${WSI_NUM_WORKERS:-4}"
++WSI_PERSISTENT_WORKERS="${WSI_PERSISTENT_WORKERS:-0}"
+ export WSI_NUM_WORKERS
++export WSI_PERSISTENT_WORKERS
+*** Update File: Hi-Vec/scripts/run_wsi_hivec.sh
+@@
+ WSI_NUM_WORKERS="${WSI_NUM_WORKERS:-4}"
++WSI_PERSISTENT_WORKERS="${WSI_PERSISTENT_WORKERS:-0}"
+ export WSI_NUM_WORKERS
++export WSI_PERSISTENT_WORKERS
+*** Update File: MINGLE/scripts/run_wsi_mingle.sh
+@@
+ WSI_NUM_WORKERS="${WSI_NUM_WORKERS:-4}"
++WSI_PERSISTENT_WORKERS="${WSI_PERSISTENT_WORKERS:-0}"
+ export WSI_NUM_WORKERS
++export WSI_PERSISTENT_WORKERS
+*** Update File: AdaMerging/src/run_wsi_adamerging.py
+@@
+ def reset_cuda_peak(device: torch.device) -> None:
+@@
+         torch.cuda.reset_peak_memory_stats(device)
+ 
+ 
++def release_test_loader(dataset: Sequential_Generic_MIL_Dataset, loader) -> None:
++    iterator = getattr(loader, '_iterator', None)
++    shutdown = getattr(iterator, '_shutdown_workers', None)
++    if callable(shutdown):
++        shutdown()
++    if hasattr(loader, '_iterator'):
++        loader._iterator = None
++    if hasattr(dataset, 'test_loaders'):
++        dataset.test_loaders[:] = [item for item in dataset.test_loaders if item is not loader]
++
++
+ def count_eval_slides(args: argparse.Namespace, cfg, dataset: Sequential_Generic_MIL_Dataset) -> int:
+@@
+             _, _, loader = dataset.get_data_loaders(fold_id, task_id)
+-            total += len(loader)
++            try:
++                total += len(loader)
++            finally:
++                release_test_loader(dataset, loader)
+@@
+                 loss_count += 1
+                 del params, features, coords, idx, slide_embed, logits, loss
++            release_test_loader(dataset, test_loader)
+@@
+                     preds.append(int(logits.argmax(dim=1)))
+                     targets.append(int(label.item()))
++            release_test_loader(dataset, loader)
+             acc = float(np.mean(np.asarray(preds) == np.asarray(targets)))
+@@
+                     preds.append(pred)
+                     targets.append(target)
++                release_test_loader(dataset, loader)
+                 per_task_accs[f'task{task_id}_acc'] = float(np.mean(np.asarray(task_preds) == np.asarray(task_targets)))
+@@
+                     preds.append(starts[pred_task] + pred_local)
+                     targets.append(starts[task_id] + int(label.item()))
++                release_test_loader(dataset, loader)
+         acc = float(np.mean(np.asarray(preds) == np.asarray(targets)))
+*** Update File: MINGLE/src/run_wsi_mingle.py
+@@
+ def cuda_peak_mb(device: torch.device) -> float:
+@@
+     return float(torch.cuda.max_memory_allocated(device) / (1024 ** 2))
+ 
+ 
++def release_test_loader(dataset: Sequential_Generic_MIL_Dataset, loader) -> None:
++    iterator = getattr(loader, "_iterator", None)
++    shutdown = getattr(iterator, "_shutdown_workers", None)
++    if callable(shutdown):
++        shutdown()
++    if hasattr(loader, "_iterator"):
++        loader._iterator = None
++    if hasattr(dataset, "test_loaders"):
++        dataset.test_loaders[:] = [item for item in dataset.test_loaders if item is not loader]
++
++
+ def count_eval_slides(dataset: Sequential_Generic_MIL_Dataset, fold_start: int, fold_end: int) -> int:
+@@
+             _, _, loader = dataset.get_data_loaders(fold, task_id)
+-            total += len(loader)
++            try:
++                total += len(loader)
++            finally:
++                release_test_loader(dataset, loader)
+@@
+                     device=device,
+                 )
++                release_test_loader(dataset, test_loader)
+                 model.bank.set_active_tasks(task_id + 1)
+@@
+                         device=device,
+                     )
++                release_test_loader(dataset, test_loader)
+                 fold_metrics.append(metrics)
+*** End Patch
