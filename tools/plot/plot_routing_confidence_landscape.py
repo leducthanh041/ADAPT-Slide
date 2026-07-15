@@ -1076,8 +1076,8 @@ def plot_landscape(
             linestyle="None",
             markerfacecolor=palette.get(task_id, "#777777"),
             markeredgecolor="white",
-            markeredgewidth=0.55,
-            markersize=13.0,
+            markeredgewidth=0.70,
+            markersize=16.5,
             label=task_names[task_id],
         )
         for task_id in task_ids
@@ -1090,11 +1090,11 @@ def plot_landscape(
             linestyle="None",
             markerfacecolor="none",
             markeredgecolor="#00c853",
-            markeredgewidth=2.50,
-            markersize=17.0,
+            markeredgewidth=3.10,
+            markersize=22.0,
             label="Corrected by ADAPT-Merge",
         ),
-        Line2D([0], [0], color="#00a651", lw=3.0, alpha=0.82, label="Correction movement"),
+        Line2D([0], [0], color="#00a651", lw=4.1, alpha=0.86, label="Correction movement"),
     ]
     fig.legend(
         task_handles + status_handles,
@@ -1102,12 +1102,12 @@ def plot_landscape(
         loc="lower center",
         ncol=4,
         frameon=False,
-        fontsize=18.0,
-        handlelength=1.25,
+        fontsize=22.0,
+        handlelength=1.45,
         borderpad=0.0,
-        columnspacing=1.00,
-        labelspacing=0.22,
-        bbox_to_anchor=(0.5, 0.135),
+        columnspacing=1.08,
+        labelspacing=0.20,
+        bbox_to_anchor=(0.5, 0.128),
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
