@@ -25,8 +25,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from mergeslide_tta.constants import TITAN_PS_ARG
-from mergeslide_tta.tta_losses import (
+from adapt_slide.constants import TITAN_PS_ARG
+from adapt_slide.tta_losses import (
     dual_level_tta_loss,
     l2_anchor_loss,
     select_confident_subbags,

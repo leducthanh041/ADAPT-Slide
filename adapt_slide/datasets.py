@@ -18,7 +18,27 @@ import h5py
 import torch.nn.functional as F
 import numpy as np
 from typing import Tuple
-from mergeslide_tta.constants import get_order_constants, CLASSIFIER_CLASS_RANGES_FORWARD
+from adapt_slide.constants import get_order_constants, CLASSIFIER_CLASS_RANGES_FORWARD
+
+
+def get_wsi_loader_kwargs(config_workers: int = 0) -> dict:
+    """Return bounded DataLoader options with an explicit runtime override.
+
+    WSI features live on shared storage, so worker count is intentionally not
+    changed by default.  ``WSI_NUM_WORKERS`` enables controlled overlap of
+    storage reads without changing the evaluation protocol.
+    """
+    configured = int(config_workers)
+    override = os.environ.get("WSI_NUM_WORKERS")
+    num_workers = configured if override is None else max(0, int(override))
+    options = {"num_workers": num_workers}
+    if num_workers > 0:
+        options.update(
+            pin_memory=os.environ.get("WSI_PIN_MEMORY", "1") == "1",
+            persistent_workers=os.environ.get("WSI_PERSISTENT_WORKERS", "1") == "1",
+            prefetch_factor=max(1, int(os.environ.get("WSI_PREFETCH_FACTOR", "2"))),
+        )
+    return options
 
 class ContinualDataset:
     """
@@ -693,12 +713,13 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
 
     def _make_loader(self, dataset, shuffle: bool) -> DataLoader:
         """Helper dùng chung — tránh lặp DataLoader constructor 6 lần."""
+        loader_options = get_wsi_loader_kwargs(self.num_workers)
         return DataLoader(
             dataset,
             batch_size=self.batch_size,
             shuffle=shuffle,
-            num_workers=self.num_workers,
             collate_fn=collate_MIL,
+            **loader_options,
         )
 
     def get_data_loaders(self, fold: int, task_id: int):

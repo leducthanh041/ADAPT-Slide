@@ -1,6 +1,7 @@
 # ---------------------------------------------------------------------------
 # Python caches
 # ---------------------------------------------------------------------------
+./adapt_slide/__pycache__
 __pycache__/
 *.py[cod]
 *$py.class
@@ -101,6 +102,20 @@ old_code_mergeslide/
 related_work/
 checkpoints_nfs_backup_*/
 docs_old/
+docs/
+tools/compute_prefix_continual_metrics.py
+tools/random_search_classil_tta.py
+
+# ---------------------------------------------------------------------------
+# Paper release exclusions: baseline inference, ablation, and local analysis
+# ---------------------------------------------------------------------------
+test_classIL_task_prompt_other_metrics.py
+test_classIL_task_prompt.py
+test_taskIL.py
+tools/summarize_entropy_threshold_ablation.py
+tools/summarize_prefix_nsteps_ablation.py
+tools/plot/
+harden_prefix_methods.patch
 
 # ---------------------------------------------------------------------------
 # One-off local maintenance scripts

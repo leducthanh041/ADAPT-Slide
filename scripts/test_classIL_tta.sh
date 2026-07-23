@@ -134,6 +134,7 @@ if [ -n "$ACTIVE_BEST_CONFIG" ]; then
     else
     eval "$("$PYTHON_BIN" - "$ACTIVE_BEST_CONFIG" <<'PY'
 import json
+import os
 import shlex
 import sys
 
@@ -160,7 +161,7 @@ mapping = {
     "gamma_margin": "TTA_GAMMA_MARGIN",
 }
 for key, env_name in mapping.items():
-    if key in cfg:
+    if key in cfg and env_name not in os.environ:
         print(f"{env_name}={shlex.quote(str(cfg[key]))}")
 PY
 )"

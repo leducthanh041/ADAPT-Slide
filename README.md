@@ -1,9 +1,18 @@
-# MergeSlide-TTA
+# ADAPT-Slide
 
-MergeSlide-TTA is a test-time adaptation extension for MergeSlide on whole-slide image inference.  
-The method follows the MergeSlide-TTA research idea and adapts the merged model at test time by updating selected LayerNorm affine parameters, while keeping the merging structure and prompt embeddings frozen.
+**ADAPT-Slide: Anchored Dual-Level Adaptation with Prompt and Normalization Tuning for Continual Model Merging in Whole-Slide Image Analysis**
 
-## 1. Requirements
+ADAPT-Slide is a test-time adaptation framework for continual model merging in whole-slide image (WSI) analysis. It extends the MergeSlide inference pipeline by adapting the merged slide aggregator at test time while keeping the continual merging structure stable.
+
+The default method updates only selected LayerNorm affine parameters in the TITAN slide aggregator. Merged weights, merge coefficients, class-aware prompts, task-level prompts, and the text encoder remain frozen unless an experimental branch explicitly enables otherwise.
+
+## Overview
+
+![Overview of ADAPT-Slide compared with TTA-guided model merging methods.](figures/overview.png)
+
+![The full ADAPT-Slide framework is provided as a vector figure.](figures/framework.png)
+
+## Requirements
 
 Install the runtime stack used by this repo:
 
@@ -25,46 +34,9 @@ tensorboard
 
 See `requirements.txt` for the full list.
 
-## 2. Project Structure
+## Dataset
 
-```text
-MergeSlide_TTA_v1/
-├── README.md
-├── docs/
-├── mergeslide_tta/
-│   ├── __init__.py
-│   ├── constants.py
-│   ├── datasets.py
-│   ├── metrics.py
-│   ├── model.py
-│   ├── prompts_zeroshot.py
-│   ├── tta_adapter.py
-│   ├── tta_losses.py
-│   └── utils.py
-├── scripts/
-│   ├── test_classIL.sh
-│   ├── test_classIL_tta.sh
-│   ├── test_taskIL.sh
-│   └── test_taskIL_tta.sh
-├── checkpoints -> /docker/data/thanhld/MergeSlide_TTA_v1/checkpoints
-├── checkpoints_ood -> /docker/data/thanhld/MergeSlide_TTA_v1/checkpoints_ood
-├── logs -> /docker/data/thanhld/MergeSlide_TTA_v1/logs
-├── merge.py
-├── opcm_mergeslide.py
-├── task_prompts.pt
-├── test_classIL_task_prompt.py
-├── test_classIL_task_prompt_other_metrics.py
-├── test_classIL_tta.py
-├── test_taskIL.py
-├── test_taskIL_tta.py
-├── train.py
-└── tools/
-    └── run_classil_with_pt_features.py
-```
-
-## 3. Datasets
-
-The experiments use six TCGA tasks:
+The experiments use six TCGA WSI tasks:
 
 - TCGA-BRCA
 - TCGA-RCC
@@ -73,79 +45,58 @@ The experiments use six TCGA tasks:
 - TCGA-TGCT
 - TCGA-CESC
 
-### Data preparation
+The WSI preprocessing and feature preparation pipeline follows the notebook:
 
-Prepare WSI annotations and pre-extracted features, then point `mergeslide_tta/datasets.py` to the local dataset root. BRCA, RCC, and NSCLC use CSV-based split metadata; ESCA, TGCT, and CESC use the simplified directory-based format already supported by the repo.
+```text
+notebooks/WSI_processing.ipynb
+```
 
-## 4. Implementation
+This notebook documents how WSIs are prepared before running finetuning, merging, and inference in this project.
 
-### 4.1. Base MergeSlide workflow
+## Implementation
 
-Per-task finetuning:
+The implementation contains three main stages:
+
+1. **Task-specific finetuning**: train one slide-level model per task.
+2. **Continual model merging**: merge task-specific models into a unified model following the MergeSlide-style continual merging protocol.
+3. **Test-time adaptation**: during inference, adapt the merged model with confidence-filtered dual-level objectives while updating only LayerNorm affine parameters by default.
+
+Main entrypoints:
 
 ```bash
+# Task-specific finetuning
 bash scripts/finetune.sh
-```
 
-Model merging:
-
-```bash
+# Continual model merging
 bash scripts/mergemodel.sh
-```
 
-### 4.2. TTA evaluation
-
-Class-IL TTA:
-
-```bash
+# Class-IL TTA inference
 bash scripts/test_classIL_tta.sh
-```
 
-Task-IL TTA:
-
-```bash
+# Task-IL TTA inference
 bash scripts/test_taskIL_tta.sh
 ```
 
-These scripts run the current TTA setup used in this repo, including LN adaptation and the routing-aware variants introduced for MergeSlide-TTA.
+The Class-IL TTA script supports both TCP routing and naive Class-IL inference modes. Task-IL uses the known task identity and does not optimize TCP routing.
 
-### 4.3. Baseline evaluation entrypoints
+## Method Summary
 
-Class-IL baseline on the original MergeSlide setting:
+ADAPT-Slide uses:
 
-```bash
-bash scripts/test_classIL.sh
-```
+- confidence-filtered sub-bag selection;
+- class-level and task-level entropy guidance;
+- anchored regularization toward pre-TTA LayerNorm parameters;
+- optional EMA teacher and task-prompt memory in the experimental prompt-adaptation branch;
+- continual adaptation across slides by default.
 
-Task-IL baseline on the original MergeSlide setting:
+The core research setting keeps adaptation lightweight and localized to normalization parameters, which reduces the risk of disrupting the merged model while improving robustness under domain shift.
 
-```bash
-bash scripts/test_taskIL.sh
-```
+## Acknowledgement
 
-## 5. MergeSlide-TTA summary
-
-The proposed adaptation strategy is:
-
-- freeze merging coefficients
-- freeze class-aware and task-level prompt embeddings
-- freeze the TITAN backbone
-- update only selected LayerNorm affine parameters during test time
-- use entropy-guided confidence filtering to decide whether to adapt a slide
-- keep the adaptation small enough to avoid breaking the merged model structure
-
-This is intended for OOD / cross-site WSI inference, where the original MergeSlide model can lose accuracy under domain shift.
-
-## 6. Acknowledgement
-
-This project builds on the original MergeSlide code base:
+This project builds on the original MergeSlide codebase:
 
 - https://github.com/caodoanh2001/MergeSlide
 
-It is also inspired by:
+The slide aggregator and visual-language backbone follow TITAN:
 
-- TITAN
-- FusionBench
-- CATE
-
-The authors thank the original projects for their work and for making the research path possible.
+- https://github.com/mahmoodlab/TITAN

@@ -42,15 +42,15 @@ from sklearn.metrics import (
 from tqdm import tqdm
 from transformers import AutoModel
 
-from mergeslide_tta.constants import K_PATCHES, NUM_TASKS
-from mergeslide_tta.datasets import Sequential_Generic_MIL_Dataset
-from mergeslide_tta.metrics import pad_numpy_arrays
-from mergeslide_tta.prompts_zeroshot import (
+from adapt_slide.constants import K_PATCHES, NUM_TASKS
+from adapt_slide.datasets import Sequential_Generic_MIL_Dataset
+from adapt_slide.metrics import pad_numpy_arrays
+from adapt_slide.prompts_zeroshot import (
     brca_prompts, rcc_prompts, nsclc_prompts,
     esca_prompts, tgct_prompts, cesc_prompts,
 )
-from mergeslide_tta.utils import get_eval_metrics, seed_torch
-from mergeslide_tta.tta_adapter import MergeSlide_TTA, load_task_weights
+from adapt_slide.utils import get_eval_metrics, seed_torch
+from adapt_slide.tta_adapter import MergeSlide_TTA, load_task_weights
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 HOT_DIR_NAMES = {"checkpoints", "logs", "sqlite"}
