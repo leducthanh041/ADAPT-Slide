@@ -562,9 +562,9 @@ class ConcatDataset(Dataset):
 
 class Sequential_Generic_MIL_Dataset(ContinualDataset):
     """
-    Sequential MIL dataset wrapper cho 6 TCGA tasks.
+    Sequential MIL dataset wrapper for six TCGA tasks.
 
-    Thứ tự task cố định:
+    Default task order:
         0: BRCA  (IDC / ILC)
         1: RCC   (CCRCC / PRCC / CHRCC)
         2: NSCLC (LUAD / LUSC)
@@ -573,8 +573,8 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
         5: CESC  (class 0 / class 1)
 
     Args:
-        cfg: OmegaConf DictConfig từ configs/default.yaml.
-             Nếu None, dùng lại path + dataloader config hardcode (backward compat).
+        cfg: OmegaConf DictConfig. If None, use the backward-compatible
+             hardcoded dataset paths and dataloader settings.
     """
 
     NAME = "seq-wsi"
@@ -594,11 +594,9 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
 
         if cfg is not None:
             self._init_from_config(cfg)
-            # Lấy dataloader config từ yaml
             self.batch_size  = cfg.dataloader.batch_size
             self.num_workers = cfg.dataloader.num_workers
 
-            # Đảo thứ tự nếu config yêu cầu
             order = getattr(cfg.dataset, "order", "forward")
             if order == 'reverse':
                 self.datasets   = list(reversed(self.datasets))
@@ -610,7 +608,6 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
             self.num_classes = list(num_classes)
         else:
             self._init_hardcoded()
-            # Fallback về giá trị gốc
             self.batch_size  = 1
             self.num_workers = 4
         
@@ -618,7 +615,7 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
         self._build_class_mappings()
 
     # ------------------------------------------------------------------
-    # Khởi tạo từ config
+    # Config-based initialization.
     # ------------------------------------------------------------------
 
     def _init_from_config(self, cfg):
@@ -712,7 +709,7 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
         return f"{self.split_dirs[task_id]}/splits_{fold}.csv"
 
     def _make_loader(self, dataset, shuffle: bool) -> DataLoader:
-        """Helper dùng chung — tránh lặp DataLoader constructor 6 lần."""
+        """Create a MIL DataLoader with the shared loader options."""
         loader_options = get_wsi_loader_kwargs(self.num_workers)
         return DataLoader(
             dataset,
@@ -723,7 +720,7 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
         )
 
     def get_data_loaders(self, fold: int, task_id: int):
-        """Trả về (train_loader, val_loader, test_loader) cho một task + fold."""
+        """Return train, validation, and test loaders for one task and fold."""
         train_ds, val_ds, test_ds = self.datasets[task_id].return_splits(
             from_id=False,
             csv_path=self._split_csv(task_id, fold),
@@ -740,8 +737,7 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
 
     def get_joint_data_loaders(self, fold: int):
         """
-        Trả về (train_loader, val_loader, test_loaders) gộp tất cả N_TASKS.
-        test_loaders là list — một phần tử per task.
+        Return joint train/validation loaders and one test loader per task.
         """
         train_datasets, val_datasets, test_loaders = [], [], []
 
@@ -769,8 +765,8 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
 
     def _build_class_mappings(self):
       """
-      Load TASK_CLASS_RANGES và TASK_TO_GLOBAL_CLASS từ constants.py
-      theo order hiện tại, sau đó verify bằng dynamic computation.
+      Load task class mappings for the current order and verify them against
+      the dynamically computed ranges.
       """
       order = getattr(self, "_order", "forward")
       (_, _, task_class_ranges, task_to_global_class) = get_order_constants(order)
@@ -778,7 +774,7 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
       self.task_class_ranges    = dict(task_class_ranges)
       self.task_to_global_class = dict(task_to_global_class)
   
-      # Verify: dynamic computation phải khớp với constants
+      # Verify that dynamic computation matches the constants.
       _start = 0
       for task_id, n in enumerate(self.num_classes):
           _end = _start + n - 1
@@ -791,7 +787,7 @@ class Sequential_Generic_MIL_Dataset(ContinualDataset):
           }, f"task_to_global_class mismatch task {task_id}"
           _start = _end + 1
   
-      # classifier_class_ranges: luôn theo FORWARD — dùng để init MLP từ prompt_classifier
+      # Classifier ranges stay in forward order for prompt-classifier initialization.
       self.classifier_class_ranges = dict(CLASSIFIER_CLASS_RANGES_FORWARD)
         
 if __name__ == '__main__':

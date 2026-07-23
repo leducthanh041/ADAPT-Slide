@@ -1,10 +1,9 @@
 # merge.py
 """
-C.OPCM Continual Model Merging cho MergeSlide.
+C.OPCM continual model merging for ADAPT-Slide.
 
-Với mỗi fold, merge tuần tự N task checkpoints thành 1 merged vision encoder.
-Lưu intermediate checkpoint sau mỗi task (dùng cho BWT/FWT evaluation)
-và final checkpoint sau task cuối.
+For each fold, sequentially merge task checkpoints into one vision encoder and
+save both intermediate and final checkpoints for downstream evaluation.
 
 Usage:
     python merge.py --config configs/default.yaml
@@ -31,7 +30,7 @@ from adapt_slide.utils import (
 
 
 # ---------------------------------------------------------------------------
-# C.OPCM core functions — không sửa công thức
+# C.OPCM core functions
 # ---------------------------------------------------------------------------
 
 def merge_linear_weights(
@@ -43,10 +42,10 @@ def merge_linear_weights(
     accelerator: str = "cpu",
 ) -> Tensor:
     """
-    Merge Linear layer weights theo C.OPCM:
-    - Tính task vector của merged model và task model so với pretrained.
-    - Project task vector lên không gian trực giao (SVD), loại diagonal.
-    - Cộng dồn có trọng số theo lambda.
+    Merge Linear layer weights with C.OPCM.
+
+    The task update is projected through the SVD basis of the current merged
+    task vector, with diagonal components removed before accumulation.
     """
     original_device = merged_W.device
     merged_W    = merged_W.to(accelerator)
@@ -58,7 +57,7 @@ def merge_linear_weights(
 
     u, s, v = svd(previous_merged_tv)
     projected_task_tv = u.T @ task_tv @ v
-    projected_task_tv.diag().fill_(0)           # loại diagonal component
+    projected_task_tv.diag().fill_(0)
     cleaned_task_tv = u @ projected_task_tv @ v.T
 
     new_merged_W = (
@@ -77,8 +76,7 @@ def merge_other_parameters(
     accelerator: str = "cpu",
 ) -> Tensor:
     """
-    Merge các parameter không phải Linear weight (bias, LayerNorm, v.v.)
-    bằng weighted sum đơn giản, không dùng SVD projection.
+    Merge non-Linear-weight parameters with direct weighted accumulation.
     """
     original_device = merged_W.device
     merged_W    = merged_W.to(accelerator)
@@ -101,17 +99,16 @@ def merge_other_parameters(
 
 def extract_backbone_weights(ckpt_path: str) -> dict:
     """
-    Load checkpoint và trích xuất phần backbone (vision encoder),
-    bỏ qua 2 key cuối là MLP head (weight + bias).
+    Load a checkpoint and extract backbone weights.
 
     Args:
-        ckpt_path: Đường dẫn file .pt checkpoint.
+        ckpt_path: Path to a .pt checkpoint.
 
     Returns:
-        Dict state_dict chỉ chứa backbone keys, đã strip prefix 'backbone.'.
+        State dict containing backbone keys with the 'backbone.' prefix removed.
     """
     state = torch.load(ckpt_path, map_location="cpu")
-    backbone_keys = list(state.keys())[:-2]     # bỏ mlp.weight, mlp.bias
+    backbone_keys = list(state.keys())[:-2]
     return {
         k.split("backbone.")[-1]: state[k].detach()
         for k in backbone_keys
@@ -127,18 +124,18 @@ def merge_one_task(
     task_idx: int,
 ) -> dict:
     """
-    Merge task_weight vào merged_weight cho toàn bộ module của vision encoder.
+    Merge one task checkpoint into the current vision encoder weights.
 
     Args:
-        base_model: TITAN base model (frozen, chỉ dùng để lấy pretrained weights).
-        merged_weight: State dict của merged model hiện tại.
-        task_weight: State dict của task model cần merge vào.
-        previous_lambda_t: Lambda của bước trước.
-        lambda_t: Lambda của bước hiện tại (temporary = 1 khi gọi hàm này).
-        task_idx: Index task hiện tại (chỉ dùng cho tqdm label).
+        base_model: Frozen TITAN base model used to access pretrained weights.
+        merged_weight: Current merged-model state dict.
+        task_weight: Task-specific state dict to merge.
+        previous_lambda_t: Previous merge coefficient.
+        lambda_t: Current merge coefficient.
+        task_idx: Current task index for progress logging.
 
     Returns:
-        merged_weight đã được update in-place.
+        Updated merged_weight state dict.
     """
     vision_encoder = base_model.vision_encoder
 
@@ -153,7 +150,7 @@ def merge_one_task(
         pretrained_module = vision_encoder.get_submodule(module_name)
 
         if isinstance(module, nn.Linear):
-            # Linear weight — dùng SVD projection
+            # Linear weights use SVD projection.
             merged_weight[f"{module_name}.weight"] = merge_linear_weights(
                 merged_W    = merged_weight[f"{module_name}.weight"],
                 pretrained_W = pretrained_module.weight.detach(),
@@ -161,7 +158,7 @@ def merge_one_task(
                 previous_lambda_t=previous_lambda_t,
                 lambda_t=lambda_t,
             )
-            # Linear bias — không dùng SVD
+            # Linear biases are merged directly.
             if module.bias is not None:
                 merged_weight[f"{module_name}.bias"] = merge_other_parameters(
                     merged_W    = merged_weight[f"{module_name}.bias"],
@@ -171,7 +168,7 @@ def merge_one_task(
                     lambda_t=lambda_t,
                 )
         else:
-            # Tất cả parameter còn lại (LayerNorm, v.v.)
+            # Other parameters, including LayerNorm, are merged directly.
             for param_name, _ in module.named_parameters():
                 key = f"{module_name}.{param_name}"
                 merged_weight[key] = merge_other_parameters(
@@ -191,8 +188,7 @@ def normalize_merged_weight(
     avg_task_vector_norm: float,
 ) -> dict:
     """
-    Rescale merged task vector về avg_task_vector_norm để tránh magnitude drift.
-    Công thức: merged_W = base_W + task_vector * (avg_norm / current_norm)
+    Rescale the merged task vector to avoid magnitude drift.
     """
     vision_encoder = base_model.vision_encoder
     task_vector_norm = get_task_vector_norm(
@@ -222,20 +218,20 @@ def run_merging_for_fold(
     num_tasks: int,
 ) -> None:
     """
-    Chạy C.OPCM merging cho 1 fold.
+    Run C.OPCM merging for one fold.
 
     Args:
-        fold_id: Index của fold (int).
-        base_model: TITAN base model đã load, weights không thay đổi.
-        src_dir: Thư mục chứa per-task finetuned checkpoints.
-        dst_dir: Thư mục lưu merged checkpoints.
-        num_tasks: Số task cần merge.
+        fold_id: Fold index.
+        base_model: Loaded frozen TITAN base model.
+        src_dir: Directory containing per-task fine-tuned checkpoints.
+        dst_dir: Directory for merged checkpoints.
+        num_tasks: Number of tasks to merge.
     """
     fold_name   = f"fold_{fold_id}"
     output_dir  = Path(dst_dir) / fold_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Danh sách path checkpoint của từng task
+    # Per-task checkpoint paths.
     task_ckpt_paths = [
         str(Path(src_dir) / fold_name / f"task_{t}.pt")
         for t in range(num_tasks)
@@ -246,7 +242,7 @@ def run_merging_for_fold(
         for k, v in base_model.vision_encoder.state_dict().items()
     }
 
-    # Khởi tạo merged_weight = task_0 (chưa cần merge)
+    # Initialize from task 0 before sequential merging starts.
     merged_weight        = extract_backbone_weights(task_ckpt_paths[0])
     previous_lambda_t    = 1.0
     avg_task_vector_norm = get_task_vector_norm(merged_weight, base_weight)
@@ -254,16 +250,15 @@ def run_merging_for_fold(
 
     print(f"\n[Fold {fold_id}] Task 0 norm: {avg_task_vector_norm:.4f}")
 
-    # Merge task 1 → num_tasks-1 vào merged_weight
+    # Sequentially merge the remaining tasks.
     for model_idx, task_ckpt in enumerate(task_ckpt_paths[1:], start=1):
         task_weight = extract_backbone_weights(task_ckpt)
 
         all_task_vector_norms.append(get_task_vector_norm(task_weight, base_weight))
         avg_task_vector_norm = float(np.mean(all_task_vector_norms))
 
-        lambda_t = 1.0      # temporary — sẽ được rescale sau merge
+        lambda_t = 1.0
 
-        # Merge toàn bộ parameters
         merged_weight = merge_one_task(
             base_model=base_model,
             merged_weight=merged_weight,
@@ -273,14 +268,14 @@ def run_merging_for_fold(
             task_idx=model_idx,
         )
 
-        # Rescale lambda theo task vector norm
+        # Rescale lambda according to task-vector norm.
         merged_weight, task_vector_norm = normalize_merged_weight(
             base_model, merged_weight, avg_task_vector_norm
         )
         lambda_t           = lambda_t * (task_vector_norm / avg_task_vector_norm)
         previous_lambda_t  = lambda_t
 
-        # Lưu intermediate checkpoint (dùng cho BWT/FWT evaluation)
+        # Save intermediate checkpoints for continual metrics.
         intermediate_path = output_dir / f"merged_task_{model_idx}.pth"
         primary_path, mirror_path = save_checkpoint_with_mirror(merged_weight, intermediate_path)
         if mirror_path is not None:
@@ -288,7 +283,7 @@ def run_merging_for_fold(
         else:
             print(f"[Fold {fold_id}] Task {model_idx} merged → {primary_path}")
 
-    # Lưu final checkpoint (dùng cho Class-IL evaluation)
+    # Save the final checkpoint for Class-IL evaluation.
     final_path = output_dir / f"merged_final.pth"
     primary_path, mirror_path = save_checkpoint_with_mirror(merged_weight, final_path)
     if mirror_path is not None:
@@ -305,9 +300,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="C.OPCM Continual Model Merging")
     parser.add_argument("--config",     type=str, default="configs/default.yaml")
     parser.add_argument("--fold_start", type=int, default=None,
-                        help="Override fold start (default: 0 từ config)")
+                        help="Override fold start")
     parser.add_argument("--fold_end",   type=int, default=None,
-                        help="Override fold end (default: num_folds từ config)")
+                        help="Override fold end")
     parser.add_argument("--finetuned_checkpoints", type=str, default=None,
                         help="Override cfg.paths.finetuned_checkpoints")
     parser.add_argument("--merged_checkpoints", type=str, default=None,
@@ -317,7 +312,7 @@ if __name__ == "__main__":
     cfg        = OmegaConf.load(args.config)
     fold_start = args.fold_start if args.fold_start is not None else 0
     fold_end   = args.fold_end   if args.fold_end   is not None else cfg.training.num_folds
-    num_tasks  = cfg.training.num_tasks     # thêm field này vào default.yaml
+    num_tasks  = cfg.training.num_tasks
 
     src_dir = args.finetuned_checkpoints or cfg.paths.finetuned_checkpoints
     dst_dir = args.merged_checkpoints or cfg.paths.merged_checkpoints

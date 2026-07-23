@@ -1,33 +1,5 @@
 """
 tta_losses.py - Loss functions for MergeSlide-TTA. (PATCHED)
-
-Sources:
-  entropy_loss      : TENT (Wang et al., ICLR 2021)
-  diversity_loss    : SHOT (Liang et al., TPAMI 2021)
-  task_agreement_loss (JSD) : CoTTA-style consistency, replaces SHOT-diversity
-                              for task ROUTING (multi-view of the SAME slide)
-  select_confident  : TPT  (Shu et al., NeurIPS 2022)
-  l2_anchor_loss    : EATA (Niu et al., ICML 2022) simplified
-
---------------------------------------------------------------------------
-BUG FIXED (v1 -> v2):
-  Previously `dual_level_tta_loss` applied SHOT's diversity term to
-  task_logits. SHOT's diversity assumption (mean prediction over a batch
-  SHOULD be close to uniform) is valid for a batch of DIFFERENT samples
-  with different true labels. It is INVALID for task-routing logits here,
-  because all M sub-bags in a batch come from sub-sampling the SAME slide
-  -> their true task label is IDENTICAL. Rewarding the mean routing
-  prediction for being close to uniform actively teaches the M sub-bags to
-  DISAGREE with each other on which task the slide belongs to -- this is
-  the opposite of what TCP routing needs (near one-hot agreement).
-
-  Fix: task-level diversity is replaced by an agreement objective. Default
-  config disables SHOT-style task diversity entirely (use_task_diversity is
-  no longer used, kept as forced-False path for backward compatibility) and
-  optionally adds a Jensen-Shannon-Divergence agreement loss across the M
-  sub-bag routing distributions (minimize disagreement, CoTTA-style
-  consistency regularization instead of SHOT-style diversity).
---------------------------------------------------------------------------
 """
 
 import torch

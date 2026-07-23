@@ -225,7 +225,7 @@ class MergeSlide_TTA(nn.Module):
         else:
             self.teacher = None
 
-        self.n_prompt_updates = {}   # per-task counter, for logging/debug
+        self.n_prompt_updates = {}
 
         self.n_adapted = 0
         self.n_skipped = 0
