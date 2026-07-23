@@ -10,7 +10,7 @@ The default method updates only selected LayerNorm affine parameters in the TITA
 
 ![Overview of ADAPT-Slide compared with TTA-guided model merging methods.](figures/overview.png)
 
-The full ADAPT-Slide framework is provided as a vector figure: [figures/framework.pdf](figures/framework.png).
+![The full ADAPT-Slide framework is provided as a vector figure.](figures/framework.png)
 
 ## Requirements
 
