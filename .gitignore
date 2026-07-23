@@ -1,6 +1,7 @@
 # ---------------------------------------------------------------------------
 # Python caches
 # ---------------------------------------------------------------------------
+./adapt_slide/__pycache__
 __pycache__/
 *.py[cod]
 *$py.class
@@ -114,6 +115,7 @@ test_taskIL.py
 tools/summarize_entropy_threshold_ablation.py
 tools/summarize_prefix_nsteps_ablation.py
 tools/plot/
+harden_prefix_methods.patch
 
 # ---------------------------------------------------------------------------
 # One-off local maintenance scripts

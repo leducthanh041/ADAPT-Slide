@@ -20,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from mergeslide_tta.constants import TOTAL_CLASSES
+from adapt_slide.constants import TOTAL_CLASSES
 
 
 DEFAULT_ENTRYPOINT = PROJECT_ROOT / "test_classIL_task_prompt.py"
@@ -79,7 +79,7 @@ def _load_features_pt_first(h5_path: str, pt_path: str, slide_id: str):
 
 
 def _patch_datasets() -> None:
-    from mergeslide_tta import datasets as ds
+    from adapt_slide import datasets as ds
 
     def generic_mil_getitem_pt_first(self, idx):
         slide_id = self.slide_data["slide_id"][idx]

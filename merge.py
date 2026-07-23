@@ -21,8 +21,8 @@ from tqdm import tqdm
 from transformers import AutoModel
 from omegaconf import OmegaConf
 
-from mergeslide_tta.checkpoint_mirror import save_checkpoint_with_mirror
-from mergeslide_tta.utils import (
+from adapt_slide.checkpoint_mirror import save_checkpoint_with_mirror
+from adapt_slide.utils import (
     get_task_vector_norm,
     get_task_vector_state_dict,
     is_leaf_module,

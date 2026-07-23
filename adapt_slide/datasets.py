@@ -18,7 +18,7 @@ import h5py
 import torch.nn.functional as F
 import numpy as np
 from typing import Tuple
-from mergeslide_tta.constants import get_order_constants, CLASSIFIER_CLASS_RANGES_FORWARD
+from adapt_slide.constants import get_order_constants, CLASSIFIER_CLASS_RANGES_FORWARD
 
 
 def get_wsi_loader_kwargs(config_workers: int = 0) -> dict:

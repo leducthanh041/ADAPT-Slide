@@ -30,11 +30,11 @@ from sklearn.metrics import balanced_accuracy_score
 from tqdm import tqdm
 from transformers import AutoModel
 
-from mergeslide_tta.constants import K_PATCHES
-from mergeslide_tta.datasets import Sequential_Generic_MIL_Dataset
-from mergeslide_tta.metrics import backward_transfer, forgetting, pad_numpy_arrays
-from mergeslide_tta.tta_adapter import MergeSlide_TTA, load_task_weights
-from mergeslide_tta.utils import get_eval_metrics, seed_torch
+from adapt_slide.constants import K_PATCHES
+from adapt_slide.datasets import Sequential_Generic_MIL_Dataset
+from adapt_slide.metrics import backward_transfer, forgetting, pad_numpy_arrays
+from adapt_slide.tta_adapter import MergeSlide_TTA, load_task_weights
+from adapt_slide.utils import get_eval_metrics, seed_torch
 
 from test_classIL_tta import (
     PROJECT_ROOT,

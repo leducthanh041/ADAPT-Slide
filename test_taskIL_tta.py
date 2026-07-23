@@ -26,11 +26,11 @@ from sklearn.metrics import balanced_accuracy_score
 from tqdm import tqdm
 from transformers import AutoModel
 
-from mergeslide_tta.constants import EMBED_DIM, K_PATCHES, NUM_TASKS, TITAN_PS_ARG
-from mergeslide_tta.datasets import Sequential_Generic_MIL_Dataset
-from mergeslide_tta.metrics import pad_numpy_arrays
-from mergeslide_tta.utils import get_eval_metrics, seed_torch
-from mergeslide_tta.tta_adapter import MergeSlide_TTA, load_task_weights
+from adapt_slide.constants import EMBED_DIM, K_PATCHES, NUM_TASKS, TITAN_PS_ARG
+from adapt_slide.datasets import Sequential_Generic_MIL_Dataset
+from adapt_slide.metrics import pad_numpy_arrays
+from adapt_slide.utils import get_eval_metrics, seed_torch
+from adapt_slide.tta_adapter import MergeSlide_TTA, load_task_weights
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 HOT_DIR_NAMES = {"checkpoints", "logs", "sqlite"}
