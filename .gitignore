@@ -106,6 +106,16 @@ tools/compute_prefix_continual_metrics.py
 tools/random_search_classil_tta.py
 
 # ---------------------------------------------------------------------------
+# Paper release exclusions: baseline inference, ablation, and local analysis
+# ---------------------------------------------------------------------------
+test_classIL_task_prompt_other_metrics.py
+test_classIL_task_prompt.py
+test_taskIL.py
+tools/summarize_entropy_threshold_ablation.py
+tools/summarize_prefix_nsteps_ablation.py
+tools/plot/
+
+# ---------------------------------------------------------------------------
 # One-off local maintenance scripts
 # ---------------------------------------------------------------------------
 cleanup_rcc_corrupt_trident_outputs.py
