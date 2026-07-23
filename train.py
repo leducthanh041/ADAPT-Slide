@@ -185,7 +185,7 @@ if __name__ == "__main__":
     for fold_id in range(args.fold_start, args.fold_end):
         print(f"\n{'='*50}\nFold {fold_id}\n{'='*50}")
 
-        for task_id in range(NUM_TASKS):   # ← FIX: range(NUM_TASKS) không phải range(3)
+        for task_id in range(NUM_TASKS):
             task_names = (
                 list(reversed(TASK_NAMES))
                 if getattr(cfg.dataset, 'order', 'forward') == 'reverse'
@@ -214,7 +214,6 @@ if __name__ == "__main__":
             )
             elapsed = time.time() - t0
 
-            # ← FIX: checkpoint saving (bị thiếu hoàn toàn trong code gốc)
             ckpt_path, mirror_path = save_checkpoint(model, save_dir, fold_id, task_id)
             if mirror_path is not None:
                 print(f"Saved: {ckpt_path} | Mirror: {mirror_path} | Time: {elapsed:.1f}s")
