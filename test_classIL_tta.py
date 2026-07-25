@@ -479,14 +479,6 @@ if __name__ == "__main__":
         for task_id in range(num_tasks):
             _, _, test_loader = seq_dataset.get_data_loaders(fold_id, task_id)
 
-            # PATCH v2.5: reset task_prompts to source before starting a new
-            # task's sequential test stream (default). This bounds any
-            # prompt-EMA drift to within a single task's slides, mirroring
-            # tta_engine_v3.py's reset_to_source() at task boundaries.
-            # Pass --no_reset_prompt_per_task to disable (ablation only).
-            if (not args.no_reset_prompt_per_task) and (not args.no_adapt_prompts):
-                tta_model.reset_task_prompts()
-
             result = eval_task_tta(
                 test_loader          = test_loader,
                 task_id              = task_id,
