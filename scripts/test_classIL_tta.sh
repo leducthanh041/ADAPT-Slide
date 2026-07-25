@@ -90,7 +90,6 @@ TTA_EMA_ALPHA_PROMPT="${TTA_EMA_ALPHA_PROMPT:-0.999}"
 TTA_DELTA_MARGIN="${TTA_DELTA_MARGIN:-0.10}"
 TTA_TP_ANCHOR_BETA="${TTA_TP_ANCHOR_BETA:-0.3}"
 TTA_GAMMA_MARGIN="${TTA_GAMMA_MARGIN:-0.0}"
-TTA_NO_RESET_PROMPT_PER_TASK="${TTA_NO_RESET_PROMPT_PER_TASK:-0}"
 
 TTA_VERBOSE_LOSS="${TTA_VERBOSE_LOSS:-1}"
 TTA_DIAG_DIR="${TTA_DIAG_DIR:-}"
@@ -220,7 +219,7 @@ echo "[INFO] cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-<unset>}"
 echo "[INFO] tta_variants=$TTA_VARIANTS"
 echo "[INFO] TTA M=$TTA_M | K_sub=$TTA_K_SUB | top_ratio=$TTA_TOP_RATIO | alpha=$TTA_ALPHA | beta=$TTA_BETA | lr=$TTA_LR | n_steps=$TTA_N_STEPS | param_scope=$TTA_PARAM_SCOPE | entropy_threshold=$TTA_ENTROPY_THRESHOLD | reset=$RESET_LABEL | verbose_loss=$TTA_VERBOSE_LOSS"
 echo "[INFO] bugfix_ablation gamma=$TTA_GAMMA | select_mode=$TTA_SELECT_MODE | use_task_diversity=$TTA_USE_TASK_DIVERSITY | no_task_agreement=$TTA_NO_TASK_AGREEMENT"
-echo "[INFO] prompt_adapt no_teacher=$TTA_NO_TEACHER | ema_alpha=$TTA_EMA_ALPHA | no_adapt_prompts=$TTA_NO_ADAPT_PROMPTS | ema_alpha_prompt=$TTA_EMA_ALPHA_PROMPT | delta_margin=$TTA_DELTA_MARGIN | tp_anchor_beta=$TTA_TP_ANCHOR_BETA | gamma_margin=$TTA_GAMMA_MARGIN | no_reset_prompt_per_task=$TTA_NO_RESET_PROMPT_PER_TASK | naive_teacher_mode=always_no_teacher"
+echo "[INFO] prompt_adapt no_teacher=$TTA_NO_TEACHER | ema_alpha=$TTA_EMA_ALPHA | no_adapt_prompts=$TTA_NO_ADAPT_PROMPTS | ema_alpha_prompt=$TTA_EMA_ALPHA_PROMPT | delta_margin=$TTA_DELTA_MARGIN | tp_anchor_beta=$TTA_TP_ANCHOR_BETA | gamma_margin=$TTA_GAMMA_MARGIN | naive_teacher_mode=always_no_teacher"
 
 entrypoint_path="$TTA_ENTRYPOINT"
 if [[ "$entrypoint_path" != /* ]]; then
@@ -320,9 +319,6 @@ if [ "$TTA_NO_TEACHER" = "1" ]; then
 fi
 if [ "$TTA_NO_ADAPT_PROMPTS" = "1" ]; then
     TTA_ARGS+=(--no_adapt_prompts)
-fi
-if [ "$TTA_NO_RESET_PROMPT_PER_TASK" = "1" ]; then
-    TTA_ARGS+=(--no_reset_prompt_per_task)
 fi
 if [ -n "$TTA_DIAG_DIR" ]; then
     if supports_arg "--diag_dir"; then

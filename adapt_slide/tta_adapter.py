@@ -387,10 +387,7 @@ class MergeSlide_TTA(nn.Module):
         return True
 
     def reset_task_prompts(self):
-        """Reset task_prompts to source. Call between tasks (default
-        behavior, mirrors tta_engine_v3.py's reset_to_source() at task
-        boundaries) to prevent cross-task drift accumulation. Pass
-        --no_reset_prompt_per_task at the CLI to disable, for ablation."""
+        """Restore task prompts when resetting the complete TTA state."""
         with torch.no_grad():
             self.task_prompts.copy_(self.task_prompts_source)
         self.n_prompt_updates = {}

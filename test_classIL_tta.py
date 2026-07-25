@@ -331,11 +331,6 @@ if __name__ == "__main__":
                              "1 = prompts never move. Default 0.3.")
     parser.add_argument("--gamma_margin",      type=float, default=0.0,
                         help="Weight of task_margin_loss (0.0 = off).")
-    parser.add_argument("--no_reset_prompt_per_task", action="store_true",
-                        help="Do NOT reset task_prompts to source between "
-                             "tasks. Default: reset per task (bounds "
-                             "cross-task drift). Pass this flag only for "
-                             "ablation / order-dependence stress-testing.")
     # --------------------------------------------------------------------
     parser.add_argument("--verbose_loss",      action="store_true")
     parser.add_argument(

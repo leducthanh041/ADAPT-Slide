@@ -142,7 +142,6 @@ TTA_EMA_ALPHA_PROMPT="${TTA_EMA_ALPHA_PROMPT:-0.999}"
 TTA_DELTA_MARGIN="${TTA_DELTA_MARGIN:-0.10}"
 TTA_TP_ANCHOR_BETA="${TTA_TP_ANCHOR_BETA:-0.3}"
 TTA_GAMMA_MARGIN="${TTA_GAMMA_MARGIN:-0.0}"
-TTA_NO_RESET_PROMPT_PER_TASK="${TTA_NO_RESET_PROMPT_PER_TASK:-0}"
 TTA_VERBOSE_LOSS="${TTA_VERBOSE_LOSS:-0}"
 
 CLASSIL_WRAPPER="${CLASSIL_WRAPPER:-tools/run_classil_with_pt_features.py}"
@@ -250,9 +249,6 @@ run_one_mode() {
     fi
     if [ "$TTA_NO_ADAPT_PROMPTS" = "1" ]; then
         args+=(--no_adapt_prompts)
-    fi
-    if [ "$TTA_NO_RESET_PROMPT_PER_TASK" = "1" ]; then
-        args+=(--no_reset_prompt_per_task)
     fi
     if [ "$TTA_VERBOSE_LOSS" = "1" ]; then
         args+=(--verbose_loss)

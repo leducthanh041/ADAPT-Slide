@@ -288,11 +288,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_margin", type=float, default=0.10)
     parser.add_argument("--tp_anchor_beta", type=float, default=0.3)
     parser.add_argument("--gamma_margin", type=float, default=0.0)
-    parser.add_argument(
-        "--no_reset_prompt_per_task",
-        action="store_true",
-        help="Do not reset task prompts between eval tasks inside a prefix.",
-    )
     parser.add_argument("--verbose_loss", action="store_true")
     return parser
 
@@ -419,13 +414,6 @@ def main() -> None:
 
             for task_id in range(seq_task):
                 _, _, test_loader = seq_dataset.get_data_loaders(fold_id, task_id)
-
-                if (
-                    (not args.no_reset_prompt_per_task)
-                    and adapt_task_prompts
-                    and args.mode == "tcp"
-                ):
-                    tta_model.reset_task_prompts()
 
                 result = _run_task_with_tta(
                     test_loader=test_loader,
