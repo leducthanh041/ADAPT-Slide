@@ -6,12 +6,6 @@ ADAPT-Slide is a test-time adaptation framework for continual model merging in w
 
 The default method updates only selected LayerNorm affine parameters in the TITAN slide aggregator. Merged weights, merge coefficients, class-aware prompts, task-level prompts, and the text encoder remain frozen unless an experimental branch explicitly enables otherwise.
 
-## Overview
-
-![Overview of ADAPT-Slide compared with TTA-guided model merging methods.](figures/overview.png)
-
-![The full ADAPT-Slide framework is provided as a vector figure.](figures/framework.png)
-
 ## Requirements
 
 Install the runtime stack used by this repo:
